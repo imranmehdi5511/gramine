@@ -9,6 +9,10 @@ the Makefile and a template for generating the manifest.
 
 Run `make` (non-debug) or `make DEBUG=1` (debug) in the directory.
 
+##IMPORTANT TASK
+
+Create a testdir folder inside the bash/scripts directory or the commands will fail.
+
 ## Building for SGX
 
 Run `make SGX=1` (non-debug) or `make SGX=1 DEBUG=1` (debug) in the directory.
