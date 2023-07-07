@@ -842,12 +842,14 @@ are not cryptographically hashed and are thus not protected.
    developers must not allow files blindly! Instead, use trusted or encrypted
    files.
 
+Note For Allowed Files:
+^^^^^^^^^^^^^^^^^^^^^^^
 Use the following command to allow all components of the folder present inside the PWD i.e., the folder containing files is in the same directory as the project.
 Your `log/data/text or any other files` should be created in some specific directory (not just in the application directory). E.g. a sub-directory named `logs/[log/data/text or any other]`. Then you do this:
-```
-sgx.allowed_files = [
-  "file:<log/data/text or any other >/",  # all files under this directory are allowed
-```
+::
+   sgx.allowed_files = [
+     "file:<log/data/text or any other >/",  # all files under this directory are allowed
+
 ..warning::
 No need to add any `<log/data/text or any other files>` to `sgx.trusted_files`[if they have been added to allowed files]. Actually, a single file can be in only one of these two lists.
 
