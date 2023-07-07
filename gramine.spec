@@ -24,6 +24,7 @@ BuildRequires: perl
 BuildRequires: protobuf-c-compiler
 BuildRequires: protobuf-c-devel
 BuildRequires: python3-devel
+BuildRequires: python3-recommonmark
 BuildRequires: python3-sphinx
 BuildRequires: python3-sphinx_rtd_theme
 
@@ -95,7 +96,6 @@ install -t %{buildroot}/%{_licensedir}/%{name} LICENSE*.txt
 
 %dir %{_libdir}/%{name}/runtime
 %{_libdir}/%{name}/runtime/glibc
-%{_libdir}/%{name}/runtime/musl
 
 %{_libdir}/pkgconfig/mbedtls_%{name}.pc
 %{_libdir}/pkgconfig/ra_tls_%{name}.pc

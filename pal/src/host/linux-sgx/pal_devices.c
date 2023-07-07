@@ -11,6 +11,7 @@
  */
 
 #include "api.h"
+#include "ioctls.h"
 #include "pal.h"
 #include "pal_error.h"
 #include "pal_flags_conv.h"
@@ -18,6 +19,8 @@
 #include "pal_linux.h"
 #include "pal_linux_error.h"
 #include "perm.h"
+#include "toml.h"
+#include "toml_utils.h"
 
 static int dev_open(PAL_HANDLE* handle, const char* type, const char* uri, enum pal_access access,
                     pal_share_flags_t share, enum pal_create_mode create,
@@ -219,3 +222,103 @@ struct handle_ops g_dev_ops = {
     .attrquery      = &dev_attrquery,
     .attrquerybyhdl = &dev_attrquerybyhdl,
 };
+
+int _PalDeviceIoControl(PAL_HANDLE handle, uint32_t cmd, unsigned long arg, int* out_ret) {
+    int ret;
+    int fd;
+    if (handle->hdr.type == PAL_TYPE_DEV)
+        fd = handle->dev.fd;
+    else if (handle->hdr.type == PAL_TYPE_SOCKET)
+        fd = handle->sock.fd;
+    else
+        return -PAL_ERROR_INVAL;
+
+    if ((PAL_IDX)fd == PAL_IDX_POISON)
+        return -PAL_ERROR_DENIED;
+
+    /* find this IOCTL request in the manifest */
+    toml_table_t* manifest_sys = toml_table_in(g_pal_public_state.manifest_root, "sys");
+    if (!manifest_sys)
+        return -PAL_ERROR_NOTIMPLEMENTED;
+
+    toml_array_t* toml_ioctl_struct = NULL;
+    ret = ioctls_get_allowed_ioctl_struct(manifest_sys, cmd, &toml_ioctl_struct);
+    if (ret < 0)
+        return ret;
+
+    if (!toml_ioctl_struct) {
+        /* special case of "no struct needed for IOCTL" -> base-type or ignored IOCTL argument */
+        *out_ret = ocall_ioctl(fd, cmd, arg);
+        return 0;
+    }
+
+    void* host_addr = NULL;
+    size_t host_size = 0;
+
+    size_t mem_regions_cnt = MAX_MEM_REGIONS;
+    size_t sub_regions_cnt = MAX_SUB_REGIONS;
+    struct mem_region* mem_regions = calloc(mem_regions_cnt, sizeof(*mem_regions));
+    struct sub_region* sub_regions = calloc(sub_regions_cnt, sizeof(*sub_regions));
+    if (!mem_regions || !sub_regions) {
+        ret = -PAL_ERROR_NOMEM;
+        goto out;
+    }
+
+    /* deep-copy the IOCTL argument's input data outside of enclave, execute the IOCTL OCALL, and
+     * deep-copy the IOCTL argument's output data back into enclave */
+    ret = ioctls_collect_sub_regions(manifest_sys, toml_ioctl_struct, (void*)arg, mem_regions,
+                                     &mem_regions_cnt, sub_regions, &sub_regions_cnt);
+    if (ret < 0) {
+        log_error("IOCTL: failed to parse ioctl struct (request code = 0x%x)", cmd);
+        goto out;
+    }
+
+    for (size_t i = 0; i < sub_regions_cnt; i++) {
+        /* overapproximation since alignment doesn't necessarily increase sub-region's size */
+        host_size += sub_regions[i].size + sub_regions[i].alignment - 1;
+    }
+
+    ret = ocall_mmap_untrusted(&host_addr, ALLOC_ALIGN_UP(host_size),
+                               PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, /*fd=*/-1,
+                               /*offset=*/0);
+    if (ret < 0) {
+        ret = unix_to_pal_error(ret);
+        goto out;
+    }
+    assert(host_addr);
+
+    /* verify that all collected sub-regions are strictly inside the enclave, and the corresponding
+     * host sub-regions are strictly outside the enclave */
+    char* cur_host_addr = host_addr;
+    for (size_t i = 0; i < sub_regions_cnt; i++) {
+        if (!sub_regions[i].size)
+            continue;
+        cur_host_addr = ALIGN_UP_PTR(cur_host_addr, sub_regions[i].alignment);
+        if (!sgx_is_completely_within_enclave(sub_regions[i].gramine_addr, sub_regions[i].size)
+                || !sgx_is_valid_untrusted_ptr(cur_host_addr, sub_regions[i].size, 1)) {
+            ret = -PAL_ERROR_DENIED;
+            goto out;
+        }
+        cur_host_addr += sub_regions[i].size;
+    }
+
+    ret = ioctls_copy_sub_regions_to_host(sub_regions, sub_regions_cnt, host_addr,
+                                          sgx_copy_from_enclave);
+    if (ret < 0)
+        goto out;
+
+    int ioctl_ret = ocall_ioctl(fd, cmd, (unsigned long)host_addr);
+
+    ret = ioctls_copy_sub_regions_to_gramine(sub_regions, sub_regions_cnt, sgx_copy_to_enclave);
+    if (ret < 0)
+        goto out;
+
+    *out_ret = ioctl_ret;
+    ret = 0;
+out:
+    if (host_addr)
+        ocall_munmap_untrusted(host_addr, ALLOC_ALIGN_UP(host_size));
+    free(mem_regions);
+    free(sub_regions);
+    return ret;
+}

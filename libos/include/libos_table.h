@@ -7,11 +7,8 @@
 
 #pragma once
 
-#if defined(__i386__) || defined(__x86_64__)
-#include <asm/ldt.h>
-#endif
-
 #include "libos_types.h"
+#include "linux_abi/sysinfo.h"
 
 typedef void (*libos_syscall_t)(void);
 
@@ -91,6 +88,7 @@ long libos_syscall_wait4(pid_t pid, int* stat_addr, int options, struct __kernel
 long libos_syscall_kill(pid_t pid, int sig);
 long libos_syscall_uname(struct new_utsname* buf);
 long libos_syscall_fcntl(int fd, int cmd, unsigned long arg);
+long libos_syscall_flock(unsigned int fd, unsigned int cmd);
 long libos_syscall_fsync(int fd);
 long libos_syscall_fdatasync(int fd);
 long libos_syscall_truncate(const char* path, loff_t length);
@@ -202,25 +200,7 @@ long libos_syscall_prlimit64(pid_t pid, int resource, const struct __kernel_rlim
 long libos_syscall_sendmmsg(int fd, struct mmsghdr* msg, unsigned int vlen, unsigned int flags);
 long libos_syscall_eventfd2(unsigned int count, int flags);
 long libos_syscall_eventfd(unsigned int count);
-long libos_syscall_getcpu(unsigned* cpu, unsigned* node, struct getcpu_cache* unused);
+long libos_syscall_getcpu(unsigned* cpu, unsigned* node, void* unused_cache);
 long libos_syscall_getrandom(char* buf, size_t count, unsigned int flags);
 long libos_syscall_mlock2(unsigned long start, size_t len, int flags);
 long libos_syscall_sysinfo(struct sysinfo* info);
-
-#define GRND_NONBLOCK 0x0001
-#define GRND_RANDOM   0x0002
-#define GRND_INSECURE 0x0004
-
-#ifndef MADV_FREE
-#define MADV_FREE 8
-#endif
-#ifdef __x86_64__
-#ifndef MADV_WIPEONFORK
-#define MADV_WIPEONFORK 18
-#endif
-#ifndef MADV_KEEPONFORK
-#define MADV_KEEPONFORK 19
-#endif
-#else /* __x86_64__ */
-#error "Unsupported platform"
-#endif

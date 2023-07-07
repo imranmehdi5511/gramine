@@ -129,6 +129,7 @@ struct pal_dns_host_conf {
 /* Part of PAL state which is shared between all PALs and accessible (read-only) by the binary
  * started by PAL (usually our LibOS). */
 struct pal_public_state {
+    uint64_t instance_id;
     const char* host_type;
     const char* attestation_type; /* currently only for Linux-SGX */
 
@@ -415,19 +416,11 @@ int PalStreamDelete(PAL_HANDLE handle, enum pal_delete_mode delete_mode);
  * \param size    Size of the requested mapping. Must be non-zero and properly aligned.
  *
  * \returns 0 on success, negative error code on failure.
+ *
+ * Use `PalVirtualMemoryFree` to unmap the file.
  */
 int PalStreamMap(PAL_HANDLE handle, void* addr, pal_prot_flags_t prot, uint64_t offset,
                  size_t size);
-
-/*!
- * \brief Unmap virtual memory that is backed by a file stream.
- *
- * \returns 0 on success, negative error code on failure.
- *
- * `addr` and `size` must be aligned at the allocation alignment.
- * `[addr; addr+size)` must be a continuous memory range without any holes.
- */
-int PalStreamUnmap(void* addr, size_t size);
 
 /*!
  * \brief Set the length of the file referenced by handle to `length`.
@@ -806,9 +799,10 @@ void PalEventClear(PAL_HANDLE handle);
 int PalEventWait(PAL_HANDLE handle, uint64_t* timeout_us);
 
 typedef uint32_t pal_wait_flags_t; /* bitfield */
-#define PAL_WAIT_READ   1
-#define PAL_WAIT_WRITE  2
-#define PAL_WAIT_ERROR  4 /*!< ignored in events */
+#define PAL_WAIT_READ     1
+#define PAL_WAIT_WRITE    2
+#define PAL_WAIT_ERROR    4
+#define PAL_WAIT_HANG_UP  8
 
 /*!
  * \brief Poll - wait for an event to happen on at least one handle.
@@ -890,6 +884,30 @@ int PalSegmentBaseGet(enum pal_segment_reg reg, uintptr_t* addr);
 int PalSegmentBaseSet(enum pal_segment_reg reg, uintptr_t addr);
 
 /*!
+ * \brief Perform a device-specific operation `cmd`.
+ *
+ * \param         handle   Handle of the device.
+ * \param         cmd      Device-dependent request/control code.
+ * \param[in,out] arg      Arbitrary argument to `cmd`. May be unused or used as a 64-bit integer
+ *                         or used as a pointer to a buffer that contains the data required to
+ *                         perform the operation as well as the data returned by the operation. For
+ *                         some PALs (currently Linux and Linux-SGX), the manifest must describe the
+ *                         layout of this buffer in order to correctly copy the data to/from the
+ *                         host.
+ * \param[out]    out_ret  Typically zero, but some device-specific operations return a
+ *                         device-specific value (in addition to or instead of \p arg).
+ *
+ * \returns 0 on success, negative error value on failure.
+ *
+ * Note that this function returns a negative error value only for PAL-internal errors (like errors
+ * during finding/parsing of the corresponding IOCTL data struct in the manifest). The host's error
+ * value, if any, is always passed in `out_ret`.
+ *
+ * This function corresponds to ioctl() in UNIX systems and DeviceIoControl() in Windows.
+ */
+int PalDeviceIoControl(PAL_HANDLE handle, uint32_t cmd, unsigned long arg, int* out_ret);
+
+/*!
  * \brief Obtain the attestation report (local) with `user_report_data` embedded into it.
  *
  * \param         user_report_data       Report data with arbitrary contents (typically uniquely
@@ -949,12 +967,15 @@ int PalAttestationQuote(const void* user_report_data, size_t user_report_data_si
  *                          size.
  *
  * Retrieve the value of a special key. Currently implemented for Linux-SGX PAL, which supports two
- * such keys: `_sgx_mrenclave` and `_sgx_mrsigner`.
+ * such keys: `_sgx_mrenclave` and `_sgx_mrsigner` (see macros below).
  *
  * If a given key is not supported by the current PAL host, the function will return
  * -PAL_ERROR_NOTIMPLEMENTED.
  */
 int PalGetSpecialKey(const char* name, void* key, size_t* key_size);
+
+#define PAL_KEY_NAME_SGX_MRENCLAVE "_sgx_mrenclave"
+#define PAL_KEY_NAME_SGX_MRSIGNER  "_sgx_mrsigner"
 
 #ifdef __GNUC__
 #define symbol_version_default(real, name, version) \

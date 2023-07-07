@@ -9,20 +9,18 @@
  * and "tgkill".
  */
 
-#include <errno.h>
-#include <stddef.h>  // FIXME(mkow): Without this we get:
-                     //     asm/signal.h:126:2: error: unknown type name ‘size_t’
-                     // It definitely shouldn't behave like this...
 #include <limits.h>
-#include <linux/signal.h>
 
 #include "libos_internal.h"
 #include "libos_ipc.h"
 #include "libos_lock.h"
 #include "libos_process.h"
+#include "libos_rwlock.h"
 #include "libos_table.h"
 #include "libos_thread.h"
 #include "libos_utils.h"
+#include "linux_abi/errors.h"
+#include "linux_abi/signals.h"
 #include "pal.h"
 
 long libos_syscall_rt_sigaction(int signum, const struct __kernel_sigaction* act,
@@ -376,7 +374,9 @@ int do_kill_proc(IDTYPE sender, IDTYPE pid, int sig) {
 }
 
 int do_kill_pgroup(IDTYPE sender, IDTYPE pgid, int sig) {
-    IDTYPE current_pgid = __atomic_load_n(&g_process.pgid, __ATOMIC_ACQUIRE);
+    rwlock_read_lock(&g_process_id_lock);
+    IDTYPE current_pgid = g_process.pgid;
+    rwlock_read_unlock(&g_process_id_lock);
     if (!pgid) {
         pgid = current_pgid;
     }

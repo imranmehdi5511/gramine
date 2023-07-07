@@ -44,8 +44,12 @@ static struct pseudo_node* pseudo_find(struct libos_dentry* dent) {
         return pseudo_find_root(dent->mount->uri);
     }
 
+    assert(dent->parent != NULL);
     assert(dent->parent->inode);
+
     struct pseudo_node* parent_node = dent->parent->inode->data;
+    if (parent_node == NULL)
+        return NULL;
 
     /* Look for a child node with matching name */
     assert(parent_node->type == PSEUDO_DIR);
@@ -260,6 +264,11 @@ static int pseudo_stat(struct libos_dentry* dent, struct stat* buf) {
 
 static int pseudo_hstat(struct libos_handle* handle, struct stat* buf) {
     return pseudo_istat(handle->dentry, handle->inode, buf);
+}
+
+static int pseudo_unlink(struct libos_dentry* dent) {
+    __UNUSED(dent);
+    return -EACCES;
 }
 
 static int pseudo_follow_link(struct libos_dentry* dent, char** out_target) {
@@ -588,6 +597,7 @@ struct libos_d_ops pseudo_d_ops = {
     .lookup      = &pseudo_lookup,
     .readdir     = &pseudo_readdir,
     .stat        = &pseudo_stat,
+    .unlink      = &pseudo_unlink,
     .follow_link = &pseudo_follow_link,
     .icheckpoint = &pseudo_icheckpoint,
     .irestore    = &pseudo_irestore,

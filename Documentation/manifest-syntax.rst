@@ -94,8 +94,11 @@ path inside Gramine pointing to a mounted file. Relative paths will be
 interpreted as starting from the current working directory (i.e. from ``/`` by
 default, or ``fs.start_dir`` if specified).
 
-The recommended usage is to provide an absolute path, and mount the executable
-at that path. For example::
+The recommended usage is to provide an absolute path of the executable. This
+executable must also be in the Gramine's filesystem, either directly mounted or
+within a directory that is mounted. For example, if one wishes to execute the
+Python 3.8 interpreter, one would specify it as the entrypoint and mount the
+Python executable at the expected path within the Gramine filesystem::
 
    libos.entrypoint = "/usr/bin/python3.8"
 
@@ -168,7 +171,7 @@ This option will generate the following extra configuration:
 The functionality is achieved by taking the host's configuration via various
 APIs and reading the host's configuration files. In the case of Linux PAL,
 most information comes from the host's ``/etc``. The gathered information is
-used to create ``/etc`` files inside Gramine's file system, or change Gramine
+used to create ``/etc`` files inside Gramine's filesystem, or change Gramine
 process configuration. For security-enforcing modes (such as SGX), Gramine
 additionally sanitizes the information gathered from the host. Invalid host's
 configuration is reported as an error (e.g. invalid hostname, or invalid IPv4
@@ -251,7 +254,7 @@ User ID and Group ID
    (Default: 0)
 
 This specifies the initial, Gramine emulated user/group ID and effective
-user/group ID. It must be non-negative. By default Gramine emulates the
+user/group ID. It must be non-negative. By default, Gramine emulates the
 user/group ID and effective user/group ID as the root user (uid = gid = 0).
 
 
@@ -366,7 +369,7 @@ Root FS mount point
     fs.root.type = "[chroot|...]"
     fs.root.uri  = "[URI]"
 
-This syntax specifies the root file system to be mounted inside the library OS.
+This syntax specifies the root filesystem to be mounted inside the library OS.
 Both parameters are optional. If not specified, then Gramine mounts the current
 working directory as the root.
 
@@ -394,7 +397,7 @@ Or, as separate sections:
     path = "[PATH]"
     uri  = "[URI]"
 
-This syntax specifies how file systems are mounted inside the library OS. For
+This syntax specifies how filesystems are mounted inside the library OS. For
 dynamically linked binaries, usually at least one `chroot` mount point is
 required in the manifest (the mount point of linked libraries). The filesystems
 will be mounted in the order in which they appear in the manifest.
@@ -404,7 +407,7 @@ will be mounted in the order in which they appear in the manifest.
    ``{ path = "...", uri = "...", }`` is a syntax error.
 
 The ``type`` parameter specifies the mount point type. If omitted, it defaults
-to ``"chroot"``. The ``path`` parameter must be an absolute path (i.e. must
+to ``"chroot"``. The ``path`` parameter must be an absolute path (i.e., must
 begin with ``/``).
 
 Gramine currently supports the following types of mount points:
@@ -424,12 +427,12 @@ Gramine currently supports the following types of mount points:
 * ``tmpfs``: Temporary in-memory-only files. These files are *not* backed by
   host-level files. The tmpfs files are created under ``[PATH]`` (this path is
   empty on Gramine instance startup) and are destroyed when a Gramine instance
-  terminates. The ``[URI]`` parameter is always ignored, and can be omitted.
+  terminates. The ``[URI]`` parameter is always ignored and can be omitted.
 
   ``tmpfs`` is especially useful in trusted environments (like Intel SGX) for
   securely storing temporary files. This concept is similar to Linux's tmpfs.
   Files under ``tmpfs`` mount points currently do *not* support mmap and each
-  process has its own, non-shared tmpfs (i.e. processes don't see each other's
+  process has its own, non-shared tmpfs (i.e., processes don't see each other's
   files).
 
 Start (current working) directory
@@ -441,6 +444,168 @@ Start (current working) directory
 
 This syntax specifies the start (current working) directory. If not specified,
 then Gramine sets the root directory as the start directory (see ``fs.root``).
+
+Allowed IOCTLs
+^^^^^^^^^^^^^^
+
+::
+
+    sys.ioctl_structs.[identifier] = [memory-layout-format]
+
+    sys.allowed_ioctls = [
+      { request_code = [NUM], struct = "[identifier-of-ioctl-struct]" },
+    ]
+
+By default, Gramine disables all device-backed and socket IOCTLs. This syntax
+allows to explicitly allow a set of IOCTLs on devices (devices must be
+explicitly mounted via ``fs.mounts`` manifest syntax) and sockets (e.g. for
+``SIOCGIFCONF`` and ``SIOCGIFHWADDR``). Only IOCTLs with the ``request_code``
+argument found among the manifest-listed IOCTLs are allowed to pass-through to
+the host. Each IOCTL entry may also contain a reference to an IOCTL struct in
+the ``struct`` field, in case the third IOCTL argument is intended to be
+translated by Gramine.
+
+Available IOCTL structs are described via ``sys.ioctl_structs``. Each IOCTL
+struct describes the memory layout of the third argument to the ``ioctl`` system
+call (typically a pointer to a complex nested object passed to the device).
+Description of the memory layout is required for a deep copy of the IOCTL
+struct. Here we use the term *memory region* to denote a separate contiguous
+region of memory and the term *sub-region of a memory region* to denote a part
+of the memory region that has properties different from other sub-regions in the
+same memory region (e.g., should it be copied in or out of Gramine memory, is it
+a pointer to another memory region, etc.). For example, a C struct can be
+considered one memory region, and fields of this C struct can be considered
+sub-regions of this memory region.
+
+We also use the terms *Gramine memory* and *host memory*. This distinction is
+currently relevant only for SGX environments: Gramine memory means
+in-SGX-enclave memory and host memory means outside-of-SGX-enclave untrusted
+memory.
+
+Memory layout of the IOCTL struct is described using the TOML syntax of inline
+arrays (for each new separate memory region) and inline tables (for each
+sub-region in one memory region). Each sub-region is described via the following
+keys:
+
+- ``name`` is an optional name for this sub-region; mainly used to find
+  length-specifying sub-regions and nested memory regions.
+- ``alignment`` is an optional alignment of the memory region; may be specified
+  only in the first sub-region of a memory region (all other sub-regions are
+  contiguous with the first sub-region, so specifying their alignment doesn't
+  make sense). The default value is ``1``.
+- ``size`` is the size of this sub-region. The ``size`` field may be a string
+  with the name of another sub-region that contains the size value or an integer
+  with the constant size measured in ``unit`` units (default unit is 1 byte;
+  also see below). For example, ``size = "strlen"`` denotes a size field that
+  will be calculated dynamically during IOCTL execution based on the sub-region
+  named ``strlen``, whereas ``size = 16`` denotes a sub-region of size 16B. Note
+  that ``ptr`` sub-regions must *not* specify the ``size`` field.
+- ``unit`` is an optional unit of measurement for ``size``. It is 1 byte by
+  default. Unit of measurement must be a constant integer. For example,
+  ``size = "strlen"`` and ``unit = 2`` denote a wide-char string (where each
+  character is 2B long) of a dynamically specified length.
+- ``adjustment`` is an optional integer adjustment for ``size`` (always
+  specified in bytes). It is 0 bytes by default. This field must be a constant
+  (possibly negative) integer. For example, ``size = 6``, ``unit = 2`` and
+  ``adjustment = -8`` results in a total size of 4B.
+- ``direction = "none" | "out" | "in" | "inout"`` is an optional direction of
+  copy for this sub-region (from the app point of view). For example,
+  ``direction = "out"`` denotes a sub-region to be copied out of Gramine memory
+  to host memory, i.e., this sub-region is an input to the host device. The
+  default value is ``none`` which is useful for e.g. padding of structs. This
+  field must be ommitted if the ``ptr`` field is specified for this sub-region
+  (pointer sub-regions contain the pointer value which will be unconditionally
+  rewired to point to host memory).
+- ``ptr = inlined-memory-region`` or ``ptr = "another-ioctl-struct"``
+  specifies a pointer to another, nested memory region. This field is required
+  when describing complex IOCTL structs. Such pointer memory region always has
+  the implicit size of 8B, and the pointer value is always rewired by Gramine to
+  the memory region in host memory (containing a corresponding nested memory
+  region). If ``ptr`` is specified together with ``array_len``, it describes an
+  array of pointers to these memory regions. (In other words, ``ptr`` is an
+  array of pointers to memory regions with ``array_len = 1`` by default.) This
+  may be recursive with the ``NULL`` value being a guard, which allows
+  describing linked lists.
+- ``array_len`` is an optional number of items in the ``ptr`` array. This field
+  cannot be specified with non-``ptr`` sub-regions. The default value is ``1``.
+
+Consider this simple C snippet:
+
+.. code-block:: c
+
+   struct ioctl_read {
+       size_t buf_size;                /* copied from Gramine to device */
+       char* buf;                      /* copied from device to Gramine */
+   } __attribute__((aligned(0x1000))); /* alignment just for illustration */
+
+This translates into the following manifest syntax::
+
+    sys.ioctl_structs.ioctl_read = [
+        {
+            name      = "buf_size",
+            size      = 8,
+            direction = "out",
+            alignment = 0x1000
+        },
+        {
+            ptr = [
+                {
+                    size      = "buf_size",
+                    direction = "in"
+                }
+            ]
+        }
+    ]
+
+The above example specifies a root struct (first memory region) that consists of
+two sub-regions: the first one contains an 8-byte size value, the second one is
+an 8-byte pointer value. This pointer points to another memory region in Gramine
+memory that contains a single sub-region of size ``buf_size``. This nested
+sub-region is copied from the device into the Gramine memory.
+
+IOCTLs that use the above struct in a third argument are defined like this::
+
+    sys.allowed_ioctls = [
+      { request_code = 0x12345678, struct = "ioctl_read" },
+      { request_code = 0x87654321, struct = "ioctl_read" },
+    ]
+
+If the IOCTL's third argument should be passed directly as-is (or unused at
+all), then the ``struct`` key must be an empty string or not exist at all::
+
+    sys.allowed_ioctls = [
+      { request_code = 0x43218765, struct = "" },
+      { request_code = 0x87654321 },
+    ]
+
+.. note ::
+   IOCTLs for device communication are pass-through and thus potentially
+   insecure by themselves in e.g. SGX environments:
+
+   - IOCTL arguments are passed as-is from the app to the untrusted host,
+     which may lead to leaks of enclave data.
+   - Untrusted host can change IOCTL arguments as it wishes when passing
+     them from Gramine to the device and back.
+
+   It is the responsibility of the app developer to correctly use IOCTLs, with
+   security implications in mind. In most cases, IOCTL arguments should be
+   encrypted or integrity-protected with a key pre-shared between Gramine and
+   the device.
+
+Experimental flock (BSD-style locks) support
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+::
+
+    sys.experimental__enable_flock = [true|false]
+    (Default: false)
+
+This syntax enables the ``flock`` system call in Gramine.
+
+.. warning::
+   This syscall is still under development and may contain security
+   vulnerabilities. This is temporary; the syscall will be enabled by default in
+   the future after thorough validation and this syntax will be removed then.
 
 SGX syntax
 ----------
@@ -480,6 +645,11 @@ as RWX). Unfortunately it can negatively impact performance, as adding a page
 to the enclave at runtime is a more expensive operation than adding the page
 before enclave creation (because it involves more enclave exits and syscalls).
 
+When this feature is enabled, it is not necessary to specify
+``sgx.enclave_size`` (Gramine will automatically set it to 1TB which should be
+enough for any application). However if ``sgx.enclave_size`` is specified, this
+explicit value will take precedence.
+
 .. note::
    Support for EDMM first appeared in Linux 6.0.
 
@@ -489,12 +659,13 @@ Enclave size
 ::
 
     sgx.enclave_size = "[SIZE]"
-    (default: "256M")
+    (default: "256M" without EDMM, "1024G" with EDMM)
 
 This syntax specifies the size of the enclave set during enclave creation time
 if :term:`EDMM` is not enabled (``sgx.edmm_enable = false``) or the maximal
 size that the enclave can grow to if :term:`EDMM` is enabled
 (``sgx.edmm_enable = true``).
+
 The PAL and library OS code/data count towards this size value, as well as the
 application memory itself: application's code, stack, heap, loaded application
 libraries, etc. The application cannot allocate memory that exceeds this limit.
@@ -576,8 +747,8 @@ threads. This allows "exitless" design when application threads never leave
 the enclave (except for a few syscalls where there is no benefit, e.g.,
 ``nanosleep()``).
 
-If user specifies ``0`` or omits this directive, then no RPC threads are
-created and all system calls perform an enclave exit ("normal" execution).
+If the user specifies ``0`` or omits this directive, then no RPC threads are
+created, and all system calls perform an enclave exit ("normal" execution).
 
 Note that the number of created RPC threads should match the maximum number of
 simultaneous enclave threads. If there are more RPC threads, then CPU time is
@@ -687,15 +858,15 @@ Trusted files
     uri = "[URI]"
     sha256 = "[HASH]"
 
-This syntax specifies the files to be cryptographically hashed at build time,
-and allowed to be accessed by the app in runtime only if their hashes match.
-This implies that trusted files can be only opened for reading (not for writing)
-and cannot be created if they do not exist already. The signer tool will
-automatically generate hashes of these files and add them to the SGX-specific
-manifest (``.manifest.sgx``). The manifest writer may also specify the hash for
-a file using the TOML-table syntax, in the field ``sha256``; in this case,
-hashing of the file will be skipped by the signer tool and the value in
-``sha256`` field will be used instead.
+This syntax specifies the files to be cryptographically hashed at build time; at
+runtime, these files may only be accessed by the app if the files' hashes match
+what is stored in the manifest. This implies that trusted files can be only
+opened for reading (not for writing) and cannot be created if they do not exist
+already. The signer tool will automatically generate hashes of these files and
+add them to the SGX-specific manifest (``.manifest.sgx``). The manifest writer
+may also specify the hash for a file using the TOML-table syntax, in the field
+``sha256``; in this case, hashing of the file will be skipped by the signer tool
+and the value in ``sha256`` field will be used instead.
 
 Marking files as trusted is especially useful for shared libraries: a |~|
 trusted library cannot be silently replaced by a malicious host because the hash
@@ -763,6 +934,15 @@ Gramine:
   identity of the enclave. This is useful to allow all enclaves signed with the
   same key (and on the same platform) to unseal files.
 
+.. warning::
+   The same key must not be used for the encrypted-files mount and for the
+   application's own crypto operations. Such "double" use of the same key may
+   lead to compromise of the key. For example, specifying an FS mount via
+   ``{type = "encrypted", ..., key_name = "_sgx_mrenclave"}`` in the manifest
+   and using the same key obtained via ``/dev/attestation/keys/_sgx_mrenclave``
+   in the application is insecure. If you need to derive encryption keys from
+   such a "doubly-used" key, you must apply a KDF.
+
 File check policy
 ^^^^^^^^^^^^^^^^^
 
@@ -795,7 +975,7 @@ Attestation and quotes
     sgx.ra_client_spid     = "[HEX]"
     (Only for EPID based attestation)
 
-This syntax specifies the parameters for remote attestation. By default it is
+This syntax specifies the parameters for remote attestation. By default, it is
 not enabled.
 
 For :term:`EPID` based attestation, ``remote_attestation`` must be set to
@@ -895,7 +1075,7 @@ Specifies what events to record:
 
 * ``ocall_inner``: Records enclave state during OCALL.
 
-* ``ocall_outer``: Records the outer OCALL function, i.e. what OCALL handlers
+* ``ocall_outer``: Records the outer OCALL function, i.e., what OCALL handlers
   are going to be executed. Does not include stack information (cannot be used
   with ``sgx.profile.with_stack = true``).
 
@@ -945,99 +1125,3 @@ In addition, the application manifest must also contain ``sgx.debug = true``.
    independently.
 
 See :ref:`vtune-sgx-profiling` for more information.
-
-Deprecated options
-------------------
-
-FS mount points (deprecated syntax)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-::
-
-   fs.mount.[identifier].type = "[chroot|...]"
-   fs.mount.[identifier].path = "[PATH]"
-   fs.mount.[identifier].uri  = "[URI]"
-
-This syntax used a TOML table schema with keys for each mount. It has been
-replaced with the ``fs.mounts`` TOML array.
-
-Experimental sysfs topology support
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-::
-
-    fs.experimental__enable_sysfs_topology = [true|false]
-
-This feature is now enabled by default and the option was removed.
-
-Protected files (deprecated syntax)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-::
-
-    sgx.protected_files = [
-      "[URI]",
-      "[URI]",
-    ]
-
-    sgx.protected_mrenclave_files = [
-      "[URI]",
-      "[URI]",
-    ]
-
-    sgx.protected_mrsigner_files = [
-      "[URI]",
-      "[URI]",
-    ]
-
-This syntax specified the previous SGX-only protected files. It has been
-replaced with ``type = "encrypted"`` mounts (see :ref:`encrypted-files`).
-
-.. warning::
-   Gramine will attempt to convert this syntax to mounted filesystems, but might
-   fail to do so correctly in more complicated cases (e.g. when a single host
-   file belongs to multiple mounts). It is recommended to rewrite all usages of
-   this syntax to ``type = "encrypted"`` mounts.
-
-::
-
-   fs.insecure__protected_files_key = "[32-character hex value]"
-
-This syntax allowed specifying the default encryption key for protected files.
-It has been replaced by ``fs.insecure__keys.[KEY_NAME]]``. Note that both old
-and new syntax are suitable for debugging purposes only.
-
-Attestation and quotes (deprecated syntax)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-::
-
-    sgx.remote_attestation = [true|false]
-
-This syntax specified whether to enable SGX remote attestation. The boolean
-value has been replaced with the string value. The ``none`` value in the new
-syntax corresponds to the ``false`` boolean value in the deprecated syntax. The
-explicit ``epid`` and ``dcap`` values in the new syntax replace the ambiguous
-``true`` boolean value in the deprecated syntax.
-
-Gramine internal metadata size (deprecated syntax)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-::
-
-    loader.pal_internal_mem_size = "[SIZE]"
-    (default: "0")
-
-This syntax specified how much additional memory Gramine used to reserve for its
-internal use (e.g., metadata for trusted files, internal handles,
-etc.). Currently Gramine correctly tracks all internal memory allocations and
-does not require this workaround.
-
-Number of threads (deprecated syntax)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-::
-
-    sgx.thread_num = [NUM]
-
-This name was ambiguous and was replaced with ``sgx.max_threads``.

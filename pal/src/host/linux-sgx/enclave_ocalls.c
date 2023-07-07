@@ -1789,7 +1789,7 @@ int ocall_gettime(uint64_t* microsec_ptr) {
                 break;
             }
         }
-        *microsec_ptr = microsec;
+        *microsec_ptr = MAX(microsec, expected_microsec);
     }
 
     sgx_reset_ustack(old_ustack);
@@ -2062,6 +2062,30 @@ int ocall_eventfd(int flags) {
             retval != -ENODEV && retval != -ENOMEM) {
         retval = -EPERM;
     }
+
+    sgx_reset_ustack(old_ustack);
+    return retval;
+}
+
+int ocall_ioctl(int fd, unsigned int cmd, unsigned long arg) {
+    int retval;
+    struct ocall_ioctl* ocall_ioctl_args;
+
+    void* old_ustack = sgx_prepare_ustack();
+    ocall_ioctl_args = sgx_alloc_on_ustack_aligned(sizeof(*ocall_ioctl_args),
+                                                   alignof(*ocall_ioctl_args));
+    if (!ocall_ioctl_args) {
+        sgx_reset_ustack(old_ustack);
+        return -EPERM;
+    }
+
+    COPY_VALUE_TO_UNTRUSTED(&ocall_ioctl_args->fd, fd);
+    COPY_VALUE_TO_UNTRUSTED(&ocall_ioctl_args->cmd, cmd);
+    COPY_VALUE_TO_UNTRUSTED(&ocall_ioctl_args->arg, arg);
+
+    retval = sgx_exitless_ocall(OCALL_IOCTL, ocall_ioctl_args);
+    /* in general case, IOCTL may return any error code (the list of possible error codes is not
+     * standardized and is up to the Linux driver/kernel module), so no check of `retval` here */
 
     sgx_reset_ustack(old_ustack);
     return retval;

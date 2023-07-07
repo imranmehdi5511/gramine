@@ -9,11 +9,12 @@
 #include "libos_fs.h"
 #include "libos_handle.h"
 #include "libos_lock.h"
+#include "libos_rwlock.h"
 #include "libos_types.h"
 #include "list.h"
 #include "pal.h"
 
-#define CMDLINE_SIZE 4096
+extern struct libos_rwlock g_process_id_lock;
 
 DEFINE_LIST(libos_child_process);
 DEFINE_LISTP(libos_child_process);
@@ -37,8 +38,11 @@ struct libos_process {
     IDTYPE pid;
     IDTYPE ppid;
 
-    /* This field should be accessed atomically, so no lock needed. */
+    /* Process Group ID. Protected by `g_process_id_lock`. */
     IDTYPE pgid;
+
+    /* Session ID. Protected by `g_process_id_lock`. */
+    IDTYPE sid;
 
     /* Currently all threads share filesystem information. For more info check `CLONE_FS` flag in
      * `clone.c`. Protected by `fs_lock`. */
@@ -61,9 +65,9 @@ struct libos_process {
     struct libos_lock fs_lock;
 
     /* Complete command line for the process, as reported by /proc/[pid]/cmdline; currently filled
-     * once during initialization, using static buffer and restricted to CMDLINE_SIZE. This is
-     * enough for current workloads but see https://github.com/gramineproject/gramine/issues/79. */
-    char cmdline[CMDLINE_SIZE];
+     * once during initialization and not able to be modified.
+     * See https://github.com/gramineproject/gramine/issues/79. */
+    char* cmdline;
     size_t cmdline_size;
 };
 

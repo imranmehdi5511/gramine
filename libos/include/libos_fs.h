@@ -7,7 +7,6 @@
 
 #pragma once
 
-#include <asm/stat.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -16,6 +15,8 @@
 #include "libos_refcount.h"
 #include "libos_types.h"
 #include "libos_utils.h"
+#include "linux_abi/fs.h"
+#include "linux_abi/limits.h"
 #include "list.h"
 #include "pal.h"
 
@@ -190,8 +191,6 @@ struct libos_fs_ops {
  * pretends to have many files in a directory. */
 #define DENTRY_MAX_CHILDREN 1000000
 
-struct fs_lock_info;
-
 /*
  * Describes a single path within a mounted filesystem. If `inode` is set, it is the file at given
  * path.
@@ -226,13 +225,13 @@ struct libos_dentry {
      * `g_dcache_lock`. */
     struct libos_mount* attached_mount;
 
-    /* File lock information, stored only in the main process. Managed by `libos_fs_lock.c`. */
-    struct fs_lock* fs_lock;
+    /* File locks information, stored only in the main process. Managed by `libos_fs_lock.c`. */
+    struct dent_file_locks* file_locks;
 
     /* True if the file might have locks placed by current process. Used in processes other than
      * main process, to prevent unnecessary IPC calls on handle close. Managed by
      * `libos_fs_lock.c`. */
-    bool maybe_has_fs_locks;
+    bool maybe_has_file_locks;
 
     refcount_t ref_count;
 };
@@ -459,14 +458,6 @@ struct libos_d_ops {
      */
     int (*irestore)(struct libos_inode* inode, void* data);
 };
-
-/*
- * Limits for path and filename length, as defined in Linux. Note that, same as Linux, PATH_MAX only
- * applies to paths processed by syscalls such as getcwd() - there is no limit on paths you can
- * open().
- */
-#define NAME_MAX 255   /* filename length, NOT including null terminator */
-#define PATH_MAX 4096  /* path size, including null terminator */
 
 struct libos_fs {
     /* Null-terminated, used in manifest and for uniquely identifying a filesystem. */

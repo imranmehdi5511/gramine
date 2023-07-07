@@ -18,6 +18,7 @@
 #include "api.h"
 #include "libos_fs_encrypted.h"
 #include "libos_fs_pseudo.h"
+#include "pal.h"
 #include "toml_utils.h"
 
 /* user_report_data, target_info and quote are opaque blobs of predefined maximum sizes. Currently
@@ -256,68 +257,6 @@ static int attestation_type_load(struct libos_dentry* dent, char** out_data, siz
     return 0;
 }
 
-static int deprecated_pfkey_load(struct libos_dentry* dent, char** out_data, size_t* out_size) {
-    __UNUSED(dent);
-
-    int ret;
-
-    struct libos_encrypted_files_key* key;
-    ret = get_or_create_encrypted_files_key("default", &key);
-    if (ret < 0)
-        return ret;
-
-    pf_key_t pf_key;
-    bool is_set = read_encrypted_files_key(key, &pf_key);
-    if (is_set) {
-        size_t buf_size = sizeof(pf_key) * 2 + 1;
-        char* buf = malloc(buf_size);
-        if (!buf)
-            return -ENOMEM;
-
-        ret = dump_pf_key(&pf_key, buf, buf_size);
-        if (ret < 0) {
-            free(buf);
-            return -EACCES;
-        }
-
-        /* NOTE: we disregard the null terminator here, the caller expects raw data */
-        *out_data = buf;
-        *out_size = sizeof(pf_key) * 2;
-    } else {
-        *out_data = NULL;
-        *out_size = 0;
-    }
-    return 0;
-}
-
-static int deprecated_pfkey_save(struct libos_dentry* dent, const char* data, size_t size) {
-    __UNUSED(dent);
-
-    int ret;
-
-    struct libos_encrypted_files_key* key;
-    ret = get_or_create_encrypted_files_key("default", &key);
-    if (ret < 0)
-        return ret;
-
-    pf_key_t pf_key;
-    if (size != sizeof(pf_key) * 2) {
-        log_debug("/dev/attestation/protected_files_key: invalid length");
-        return -EACCES;
-    }
-
-    char* key_str = alloc_substr(data, size);
-    if (!key_str)
-        return -ENOMEM;
-    ret = parse_pf_key(key_str, &pf_key);
-    free(key_str);
-    if (ret < 0)
-        return -EACCES;
-
-    update_encrypted_files_key(key, &pf_key);
-    return 0;
-}
-
 static bool key_name_exists(struct libos_dentry* parent, const char* name) {
     __UNUSED(parent);
 
@@ -384,7 +323,7 @@ static int key_save(struct libos_dentry* dent, const char* data, size_t size) {
     return 0;
 }
 
-static int init_sgx_attestation(struct pseudo_node* attestation) {
+static int init_sgx_attestation(struct pseudo_node* attestation, struct pseudo_node* keys) {
     if (strcmp(g_pal_public_state->host_type, "Linux-SGX"))
         return 0;
 
@@ -406,6 +345,21 @@ static int init_sgx_attestation(struct pseudo_node* attestation) {
     target_info->perm = PSEUDO_PERM_FILE_RW;
     target_info->str.save = &target_info_save;
 
+    /* dummy retrieval of SGX sealing keys, so that they appear under /dev/attestation/keys/ */
+    const char* sealing_keys_names[] = { PAL_KEY_NAME_SGX_MRENCLAVE, PAL_KEY_NAME_SGX_MRSIGNER };
+    for (size_t i = 0; i < ARRAY_SIZE(sealing_keys_names); i++) {
+        struct libos_encrypted_files_key* key;
+        int ret = get_or_create_encrypted_files_key(sealing_keys_names[i], &key);
+        if (ret < 0) {
+            log_error("Cannot initialize SGX sealing key `%s`", sealing_keys_names[i]);
+            return ret;
+        }
+    }
+
+    /* SGX sealing keys must be read-only, so we mount them over other /dev/attestation/keys/ */
+    pseudo_add_str(keys, PAL_KEY_NAME_SGX_MRENCLAVE, &key_load);
+    pseudo_add_str(keys, PAL_KEY_NAME_SGX_MRSIGNER, &key_load);
+
     if (!strcmp(g_pal_public_state->attestation_type, "none")) {
         log_debug("host is Linux-SGX and remote attestation type is 'none', skipping "
                   "/dev/attestation/quote file");
@@ -421,10 +375,6 @@ static int init_sgx_attestation(struct pseudo_node* attestation) {
 int init_attestation(struct pseudo_node* dev) {
     struct pseudo_node* attestation = pseudo_add_dir(dev, "attestation");
 
-    int ret = init_sgx_attestation(attestation);
-    if (ret < 0)
-        return ret;
-
     struct pseudo_node* keys = pseudo_add_dir(attestation, "keys");
     struct pseudo_node* key = pseudo_add_str(keys, /*name=*/NULL, &key_load);
     key->name_exists = &key_name_exists;
@@ -432,11 +382,5 @@ int init_attestation(struct pseudo_node* dev) {
     key->perm = PSEUDO_PERM_FILE_RW;
     key->str.save = &key_save;
 
-    /* TODO: This file is deprecated in v1.2, remove 2 versions later. */
-    struct pseudo_node* deprecated_pfkey = pseudo_add_str(attestation, "protected_files_key",
-                                                          &deprecated_pfkey_load);
-    deprecated_pfkey->perm = PSEUDO_PERM_FILE_RW;
-    deprecated_pfkey->str.save = &deprecated_pfkey_save;
-
-    return 0;
+    return init_sgx_attestation(attestation, keys);
 }

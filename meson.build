@@ -40,10 +40,8 @@ vtune = get_option('vtune') == 'enabled'
 enable_libgomp = get_option('libgomp') == 'enabled'
 enable_tests = get_option('tests') == 'enabled'
 
-enable_glibc = get_option('glibc') == 'enabled'
-enable_musl = get_option('musl') == 'enabled'
-
 cc = meson.get_compiler('c')
+host_has_glibc = cc.get_define('__GLIBC__', prefix: '#include <features.h>') != ''
 objcopy = find_program('objcopy')
 
 pythonmod = import('python')
@@ -228,7 +226,7 @@ tomlc99_src = tomlc99_proj.get_variable('tomlc99_src')
 
 uthash_dep = subproject('uthash-2.1.0').get_variable('uthash_dep')
 
-mbedtls_proj = subproject('mbedtls-mbedtls-3.3.0')
+mbedtls_proj = subproject('mbedtls-mbedtls-3.4.0')
 mbedtls_static_dep = mbedtls_proj.get_variable('mbedtls_static_dep')
 mbedtls_pal_dep = mbedtls_proj.get_variable('mbedtls_pal_dep')
 
@@ -285,11 +283,10 @@ subdir('libos')
 subdir('python')
 subdir('tools')
 
-if enable_glibc
-    subproject('glibc-2.36-1')
-endif
-if enable_musl
-    subproject('musl-1.2.2')
+if get_option('libc') == 'glibc'
+    subproject('glibc-2.37-1')
+elif get_option('libc') == 'musl'
+    subproject('musl-1.2.4')
 endif
 
 if enable_libgomp

@@ -5,25 +5,22 @@
  * This file contains code for parsing system call arguments for debug purpose.
  */
 
-#include <asm/fcntl.h>
-#include <asm/ioctls.h>
-#include <asm/mman.h>
-#include <asm/unistd.h>
-#include <linux/fcntl.h>
-#include <linux/futex.h>
-#include <linux/in.h>
-#include <linux/in6.h>
-#include <linux/sched.h>
-#include <linux/un.h>
-#include <linux/wait.h>
-
 #include "api.h"
 #include "libos_fs.h"
 #include "libos_internal.h"
-#include "libos_syscalls.h"
 #include "libos_table.h"
 #include "libos_types.h"
 #include "libos_vma.h"
+#include "linux_abi/fs.h"
+#include "linux_abi/ioctl.h"
+#include "linux_abi/memory.h"
+#include "linux_abi/net.h"
+#include "linux_abi/process.h"
+#include "linux_abi/random.h"
+#include "linux_abi/sched.h"
+#include "linux_abi/signals.h"
+#include "linux_abi/syscalls_nr_arch.h"
+#include "socket_utils.h"
 
 static void parse_open_flags(struct print_buf*, va_list*);
 static void parse_open_mode(struct print_buf*, va_list*);
@@ -45,6 +42,7 @@ static void parse_socktype(struct print_buf*, va_list*);
 static void parse_futexop(struct print_buf*, va_list*);
 static void parse_ioctlop(struct print_buf*, va_list*);
 static void parse_fcntlop(struct print_buf*, va_list*);
+static void parse_flockop(struct print_buf*, va_list*);
 static void parse_seek(struct print_buf*, va_list*);
 static void parse_at_fdcwd(struct print_buf*, va_list*);
 static void parse_wait_options(struct print_buf*, va_list*);
@@ -202,7 +200,8 @@ struct parser_table {
                      parse_integer_arg, parse_pointer_arg}},
     [__NR_fcntl] = {.slow = false, .name = "fcntl", .parser = {parse_long_arg, parse_integer_arg,
                     parse_fcntlop, parse_pointer_arg}},
-    [__NR_flock] = {.slow = false, .name = "flock", .parser = {NULL}},
+    [__NR_flock] = {.slow = true, .name = "flock", .parser = {parse_long_arg, parse_integer_arg,
+                    parse_flockop}},
     [__NR_fsync] = {.slow = false, .name = "fsync", .parser = {parse_long_arg, parse_integer_arg}},
     [__NR_fdatasync] = {.slow = false, .name = "fdatasync", .parser = {parse_long_arg,
                         parse_integer_arg}},
@@ -640,9 +639,7 @@ const char* const siglist[SIGRTMIN] = {
 #undef S
 };
 
-/* 6 bytes should be sufficient for "SIGxx", but gcc 7.5.0 (Ubuntu 18.04) warns that output can be
- * truncated. */
-#define SIGNAL_NAME_SIZE 7
+#define SIGNAL_NAME_SIZE 6
 
 static const char* signal_name(int sig, char str[SIGNAL_NAME_SIZE]) {
     if (sig <= 0 || sig > SIGS_CNT) {
@@ -1131,7 +1128,7 @@ static void parse_sockaddr(struct print_buf* buf, va_list* ap) {
             struct sockaddr_in* a = (void*)addr;
             unsigned char* ip     = (void*)&a->sin_addr.s_addr;
             buf_printf(buf, "{family=IPv4,ip=%u.%u.%u.%u,port=%u}", ip[0], ip[1], ip[2], ip[3],
-                       __ntohs(a->sin_port));
+                       ntohs(a->sin_port));
             break;
         }
 
@@ -1139,9 +1136,9 @@ static void parse_sockaddr(struct print_buf* buf, va_list* ap) {
             struct sockaddr_in6* a = (void*)addr;
             unsigned short* ip     = (void*)&a->sin6_addr.s6_addr;
             buf_printf(buf, "{family=IPv6,ip=[%x:%x:%x:%x:%x:%x:%x:%x],port=%u}",
-                       __ntohs(ip[0]), __ntohs(ip[1]), __ntohs(ip[2]), __ntohs(ip[3]),
-                       __ntohs(ip[4]), __ntohs(ip[5]), __ntohs(ip[6]), __ntohs(ip[7]),
-                       __ntohs(a->sin6_port));
+                       ntohs(ip[0]), ntohs(ip[1]), ntohs(ip[2]), ntohs(ip[3]),
+                       ntohs(ip[4]), ntohs(ip[5]), ntohs(ip[6]), ntohs(ip[7]),
+                       ntohs(a->sin6_port));
             break;
         }
 
@@ -1332,6 +1329,28 @@ static void parse_fcntlop(struct print_buf* buf, va_list* ap) {
             buf_printf(buf, "OP %d", op);
             break;
     }
+}
+
+static void parse_flockop(struct print_buf* buf, va_list* ap) {
+    int flags = va_arg(*ap, int);
+
+#define FLG(n) { #n, n }
+    const struct flag_table all_flags[] = {
+        FLG(LOCK_SH),
+        FLG(LOCK_EX),
+        FLG(LOCK_UN),
+        FLG(LOCK_NB),
+        /* support for below flags was removed from Linux, so they are not really used */
+        FLG(LOCK_MAND),
+        FLG(LOCK_READ),
+        FLG(LOCK_WRITE),
+        FLG(LOCK_RW),
+    };
+#undef FLG
+
+    flags = parse_flags(buf, flags, all_flags, ARRAY_SIZE(all_flags));
+    if (flags)
+        buf_printf(buf, "|0x%x", flags);
 }
 
 static void parse_ioctlop(struct print_buf* buf, va_list* ap) {

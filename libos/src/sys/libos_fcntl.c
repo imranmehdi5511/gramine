@@ -5,7 +5,9 @@
  */
 
 /*
- * Implementation of system call "fcntl":
+ * Implementation of system calls "fcntl" and "flock".
+ *
+ * The "fcntl" syscall supports:
  *
  * - F_DUPFD, F_DUPFD_CLOEXEC (duplicate a file descriptor)
  * - F_GETFD, F_SETFD (file descriptor flags)
@@ -13,9 +15,6 @@
  * - F_SETLK, F_SETLKW, F_GETLK (POSIX advisory locks)
  * - F_SETOWN (file descriptor owner): dummy implementation
  */
-
-#include <errno.h>
-#include <linux/fcntl.h>
 
 #include "libos_fs.h"
 #include "libos_fs_lock.h"
@@ -25,6 +24,9 @@
 #include "libos_process.h"
 #include "libos_table.h"
 #include "libos_thread.h"
+#include "linux_abi/errors.h"
+#include "linux_abi/fs.h"
+#include "toml_utils.h"
 
 #define FCNTL_SETFL_MASK (O_APPEND | O_DIRECT | O_NOATIME | O_NONBLOCK)
 
@@ -52,14 +54,15 @@ int set_handle_nonblocking(struct libos_handle* handle, bool on) {
 }
 
 /*
- * Convert user-mode `struct flock` into our `struct posix_lock`. This mostly means converting the
- * position parameters (l_whence, l_start, l_len) to an absolute inclusive range [start .. end]. See
- * `man fcntl` for details.
+ * Convert user-mode `struct flock` into our `struct libos_file_lock` (for POSIX locks only). This
+ * mostly means converting the position parameters (l_whence, l_start, l_len) to an absolute
+ * inclusive range [start .. end]. See `man fcntl` for details.
  *
  * We need to return -EINVAL for underflow (positions before start of file), and -EOVERFLOW for
  * positive overflow.
  */
-static int flock_to_posix_lock(struct flock* fl, struct libos_handle* hdl, struct posix_lock* pl) {
+static int flock_to_file_lock(struct flock* fl, struct libos_handle* hdl,
+                              struct libos_file_lock* file_lock) {
     if (!(fl->l_type == F_RDLCK || fl->l_type == F_WRLCK || fl->l_type == F_UNLCK))
         return -EINVAL;
 
@@ -124,10 +127,12 @@ static int flock_to_posix_lock(struct flock* fl, struct libos_handle* hdl, struc
         end = FS_LOCK_EOF;
     }
 
-    pl->type = fl->l_type;
-    pl->start = start;
-    pl->end = end;
-    pl->pid = g_process.pid;
+    file_lock->family = FILE_LOCK_POSIX;
+    file_lock->type = fl->l_type;
+    file_lock->start = start;
+    file_lock->end = end;
+    file_lock->pid = g_process.pid;
+    file_lock->handle_id = 0; /* unused in POSIX (fcntl) locks, unset for sanity */
     return 0;
 }
 
@@ -165,10 +170,10 @@ long libos_syscall_fcntl(int fd, int cmd, unsigned long arg) {
 
         /* F_SETFD (int) */
         case F_SETFD:
-            lock(&handle_map->lock);
+            rwlock_write_lock(&handle_map->lock);
             if (HANDLE_ALLOCATED(handle_map->map[fd]))
                 handle_map->map[fd]->flags = arg & FD_CLOEXEC;
-            unlock(&handle_map->lock);
+            rwlock_write_unlock(&handle_map->lock);
             ret = 0;
             break;
 
@@ -188,7 +193,7 @@ long libos_syscall_fcntl(int fd, int cmd, unsigned long arg) {
         /* F_SETLK, F_SETLKW (struct flock*): see `libos_fs_lock.h` for caveats */
         case F_SETLK:
         case F_SETLKW: {
-            struct flock *fl = (struct flock*)arg;
+            struct flock* fl = (struct flock*)arg;
             if (!is_user_memory_readable(fl, sizeof(*fl))) {
                 ret = -EFAULT;
                 break;
@@ -211,18 +216,18 @@ long libos_syscall_fcntl(int fd, int cmd, unsigned long arg) {
                 break;
             }
 
-            struct posix_lock pl;
-            ret = flock_to_posix_lock(fl, hdl, &pl);
+            struct libos_file_lock file_lock;
+            ret = flock_to_file_lock(fl, hdl, &file_lock);
             if (ret < 0)
                 break;
 
-            ret = posix_lock_set(hdl->dentry, &pl, /*wait=*/cmd == F_SETLKW);
+            ret = file_lock_set(hdl->dentry, &file_lock, /*wait=*/cmd == F_SETLKW);
             break;
         }
 
         /* F_GETLK (struct flock*): see `libos_fs_lock.h` for caveats */
         case F_GETLK: {
-            struct flock *fl = (struct flock*)arg;
+            struct flock* fl = (struct flock*)arg;
             if (!is_user_memory_readable(fl, sizeof(*fl))
                     || !is_user_memory_writable(fl, sizeof(*fl))) {
                 ret = -EFAULT;
@@ -234,32 +239,32 @@ long libos_syscall_fcntl(int fd, int cmd, unsigned long arg) {
                 break;
             }
 
-            struct posix_lock pl;
-            ret = flock_to_posix_lock(fl, hdl, &pl);
+            struct libos_file_lock file_lock;
+            ret = flock_to_file_lock(fl, hdl, &file_lock);
             if (ret < 0)
                 break;
 
-            if (pl.type == F_UNLCK) {
+            if (file_lock.type == F_UNLCK) {
                 ret = -EINVAL;
                 break;
             }
 
-            struct posix_lock pl2;
-            ret = posix_lock_get(hdl->dentry, &pl, &pl2);
+            struct libos_file_lock file_lock2;
+            ret = file_lock_get(hdl->dentry, &file_lock, &file_lock2);
             if (ret < 0)
                 break;
 
-            fl->l_type = pl2.type;
-            if (pl2.type != F_UNLCK) {
+            fl->l_type = file_lock2.type;
+            if (file_lock2.type != F_UNLCK) {
                 fl->l_whence = SEEK_SET;
-                fl->l_start = pl2.start;
-                if (pl2.end == FS_LOCK_EOF) {
+                fl->l_start = file_lock2.start;
+                if (file_lock2.end == FS_LOCK_EOF) {
                     /* range until EOF is encoded as len == 0 */
                     fl->l_len = 0;
                 } else {
-                    fl->l_len = pl2.end - pl2.start + 1;
+                    fl->l_len = file_lock2.end - file_lock2.start + 1;
                 }
-                fl->l_pid = pl2.pid;
+                fl->l_pid = file_lock2.pid;
             }
             ret = 0;
             break;
@@ -276,6 +281,69 @@ long libos_syscall_fcntl(int fd, int cmd, unsigned long arg) {
             break;
     }
 
+    put_handle(hdl);
+    return ret;
+}
+
+long libos_syscall_flock(unsigned int fd, unsigned int cmd) {
+    int ret;
+
+    /* support for LOCK_{MAND,READ,WRITE,RW} was removed from Linux; it simply ignores LOCK_MAND
+     * requests so we do the same */
+    if (cmd & LOCK_MAND) {
+        log_warning("flock requests with LOCK_MAND are ignored");
+        return 0;
+    }
+
+    /* TODO: temporary measure, remove it once flock implementation is thoroughly validated and
+     * works on multi-process apps; see comments at `created_by_process` in `libos_handle.h` */
+    assert(g_manifest_root);
+    bool enable_flock;
+    ret = toml_bool_in(g_manifest_root, "sys.experimental__enable_flock", /*defaultval=*/false,
+                       &enable_flock);
+    if (ret < 0) {
+        log_error("Cannot parse 'sys.experimental__enable_flock' (the value must be `true` or "
+                  "`false`)");
+        return -ENOSYS;
+    }
+    if (!enable_flock) {
+        /* flock is not explicitly allowed in manifest */
+        if (FIRST_TIME()) {
+            log_warning("The app tried to use flock, but it's turned off "
+                        "(sys.experimental__enable_flock = false)");
+        }
+
+        return -ENOSYS;
+    }
+
+
+    struct libos_handle* hdl = get_fd_handle(fd, /*fd_flags=*/NULL, /*map=*/NULL);
+    if (!hdl)
+        return -EBADF;
+
+    int lock_type;
+    switch (cmd & ~LOCK_NB) {
+        case LOCK_EX:
+            lock_type = F_WRLCK;
+            break;
+        case LOCK_SH:
+            lock_type = F_RDLCK;
+            break;
+        case LOCK_UN:
+            lock_type = F_UNLCK;
+            break;
+        default:
+            ret = -EINVAL;
+            goto out;
+    }
+
+    struct libos_file_lock file_lock = {
+        .family = FILE_LOCK_FLOCK,
+        .type = lock_type,
+        .handle_id = hdl->id,
+    };
+    ret = file_lock_set(hdl->dentry, &file_lock, !(cmd & LOCK_NB));
+out:
     put_handle(hdl);
     return ret;
 }

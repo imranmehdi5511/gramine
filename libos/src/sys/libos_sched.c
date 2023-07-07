@@ -8,15 +8,14 @@
  * "getcpu".
  */
 
-#include <errno.h>
-#include <linux/resource.h>
-#include <linux/sched.h>
-
 #include "api.h"
 #include "libos_internal.h"
 #include "libos_lock.h"
 #include "libos_table.h"
 #include "libos_thread.h"
+#include "linux_abi/errors.h"
+#include "linux_abi/limits.h"
+#include "linux_abi/sched.h"
 #include "pal.h"
 
 long libos_syscall_sched_yield(void) {
@@ -267,8 +266,8 @@ long libos_syscall_sched_getaffinity(pid_t pid, unsigned int user_mask_size,
 
 /* Approx. implementation that returns a random bit that is set from the cpu affinity mask
  * associated with the current calling thread */
-long libos_syscall_getcpu(unsigned* cpu, unsigned* node, struct getcpu_cache* unused) {
-    __UNUSED(unused);
+long libos_syscall_getcpu(unsigned* cpu, unsigned* node, void* unused_cache) {
+    __UNUSED(unused_cache);
 
     int ret;
     if (cpu && !is_user_memory_writable(cpu, sizeof(*cpu)))

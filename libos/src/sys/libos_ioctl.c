@@ -5,14 +5,16 @@
  * Implementation of system call "ioctl".
  */
 
-#include <asm/ioctls.h>
-
 #include "libos_handle.h"
 #include "libos_internal.h"
 #include "libos_process.h"
+#include "libos_rwlock.h"
 #include "libos_signal.h"
 #include "libos_table.h"
+#include "linux_abi/errors.h"
+#include "linux_abi/ioctl.h"
 #include "pal.h"
+#include "stat.h"
 
 static void signal_io(IDTYPE caller, void* arg) {
     __UNUSED(caller);
@@ -30,6 +32,8 @@ static void signal_io(IDTYPE caller, void* arg) {
 }
 
 long libos_syscall_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg) {
+    int ret;
+
     struct libos_handle_map* handle_map = get_thread_handle_map(NULL);
     assert(handle_map);
 
@@ -37,7 +41,24 @@ long libos_syscall_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg) {
     if (!hdl)
         return -EBADF;
 
-    int ret;
+    lock(&g_dcache_lock);
+    bool is_host_dev = hdl->type == TYPE_CHROOT && hdl->dentry->inode &&
+        hdl->dentry->inode->type == S_IFCHR;
+    unlock(&g_dcache_lock);
+
+    if (is_host_dev) {
+        int cmd_ret;
+        ret = PalDeviceIoControl(hdl->pal_handle, cmd, arg, &cmd_ret);
+        if (ret < 0) {
+            ret = pal_to_unix_errno(ret);
+            goto out;
+        }
+
+        assert(ret == 0);
+        ret = cmd_ret;
+        goto out;
+    }
+
     switch (cmd) {
         case TIOCGPGRP:
             if (!hdl->uri || strcmp(hdl->uri, "dev:tty") != 0) {
@@ -49,7 +70,9 @@ long libos_syscall_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg) {
                 ret = -EFAULT;
                 break;
             }
-            *(int*)arg = __atomic_load_n(&g_process.pgid, __ATOMIC_ACQUIRE);
+            rwlock_read_lock(&g_process_id_lock);
+            *(int*)arg = g_process.pgid;
+            rwlock_read_unlock(&g_process_id_lock);
             ret = 0;
             break;
         case FIONBIO:
@@ -61,24 +84,24 @@ long libos_syscall_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg) {
             ret = set_handle_nonblocking(hdl, !!nonblocking_on);
             break;
         case FIONCLEX:
-            lock(&handle_map->lock);
+            rwlock_write_lock(&handle_map->lock);
             if (HANDLE_ALLOCATED(handle_map->map[fd])) {
                 handle_map->map[fd]->flags &= ~FD_CLOEXEC;
                 ret = 0;
             } else {
                 ret = -EBADF;
             }
-            unlock(&handle_map->lock);
+            rwlock_write_unlock(&handle_map->lock);
             break;
         case FIOCLEX:
-            lock(&handle_map->lock);
+            rwlock_write_lock(&handle_map->lock);
             if (HANDLE_ALLOCATED(handle_map->map[fd])) {
                 handle_map->map[fd]->flags |= FD_CLOEXEC;
                 ret = 0;
             } else {
                 ret = -EBADF;
             }
-            unlock(&handle_map->lock);
+            rwlock_write_unlock(&handle_map->lock);
             break;
         case FIOASYNC:
             ret = install_async_event(hdl->pal_handle, 0, &signal_io, NULL);
@@ -131,11 +154,18 @@ long libos_syscall_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg) {
             ret = 0;
             break;
         }
-        default:
-            ret = -ENOSYS;
+        default: {
+            struct libos_fs* fs = hdl->fs;
+            if (!fs || !fs->fs_ops || !fs->fs_ops->ioctl) {
+                ret = -ENOTTY;
+                break;
+            }
+            ret = fs->fs_ops->ioctl(hdl, cmd, arg);
             break;
+        }
     }
 
+out:
     put_handle(hdl);
     if (ret == -EINTR) {
         ret = -ERESTARTSYS;

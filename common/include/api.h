@@ -367,16 +367,6 @@ int buf_flush(struct print_buf* buf);
 
 /* Miscelleneous */
 
-int inet_pton4(const char* src, size_t len, void* dst);
-int inet_pton6(const char* src, size_t len, void* dst);
-
-uint32_t __htonl(uint32_t x);
-uint32_t __ntohl(uint32_t x);
-uint16_t __htons(uint16_t x);
-uint16_t __ntohs(uint16_t x);
-
-extern const char* const* sys_errlist_internal;
-
 #define URI_PREFIX_SEPARATOR ":"
 
 #define URI_TYPE_DIR      "dir"
@@ -400,15 +390,6 @@ extern const char* const* sys_errlist_internal;
 #define TIME_NS_IN_US 1000ul
 #define TIME_NS_IN_S (TIME_NS_IN_US * TIME_US_IN_S)
 
-/* Scrub sensitive memory bufs (memset can be optimized away and memset_s is not available in PAL).
- * FIXME: This implementation is inefficient (and used in perf-critical functions).
- * TODO:  Is this really needed? Intel SGX SDK uses similar function as "defense in depth". */
-static inline void erase_memory(void* buffer, size_t size) {
-    volatile unsigned char* p = buffer;
-    while (size--)
-        *p++ = 0;
-}
-
 #ifdef __x86_64__
 static inline bool __range_not_ok(uintptr_t addr, size_t size) {
     addr += size;
@@ -429,6 +410,14 @@ static inline bool __range_not_ok(uintptr_t addr, size_t size) {
  * region may be valid, false if it is definitely invalid. */
 static inline bool access_ok(const volatile void* addr, size_t size) {
     return !__range_not_ok((uintptr_t)addr, size);
+}
+
+/* Scrub sensitive memory bufs (memset can be optimized away and memset_s is not available in PAL).
+ * NOTE: optimizer runs only on C code and intermediate representations while assembly is
+ * copy-pasted literally into the final assembly source which gets compiled into the binary, so
+ * we're safe against being optimized away. */
+static inline void erase_memory(void* buffer, size_t size) {
+    __asm__ volatile("rep stosb" : "+D"(buffer), "+c"(size) : "a"(0) : "cc", "memory");
 }
 
 #else

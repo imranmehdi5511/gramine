@@ -169,8 +169,12 @@ noreturn void pal_linux_main(void* initial_rsp, void* fini_callback) {
 
     /* relocate PAL */
     ret = setup_pal_binary();
-    if (ret < 0)
-        INIT_FAIL("Relocation of the PAL binary failed: %s", pal_strerror(ret));
+    if (ret < 0) {
+        /* PAL relocation failed, so we can't use functions which use PAL .rodata (like
+         * pal_strerror or unix_strerror) to report an error because these functions will return
+         * offset instead of actual address, which will cause a segfault. */
+        INIT_FAIL("Relocation of the PAL binary failed: %d", ret);
+    }
 
     uint64_t start_time;
     ret = _PalSystemTimeQuery(&start_time);
@@ -213,7 +217,7 @@ noreturn void pal_linux_main(void* initial_rsp, void* fini_callback) {
     if (ret < 0)
         INIT_FAIL("verify_hw_requirements() failed");
 
-    // Are we the first in this Gramine's namespace?
+    // Are we the first in this Gramine's instance?
     bool first_process = !strcmp(argv[2], "init");
     if (!first_process && strcmp(argv[2], "child")) {
         print_usage_and_exit(argv[0]);

@@ -191,19 +191,11 @@ int create_enclave(sgx_arch_secs_t* secs, sgx_arch_token_t* token) {
     uint64_t addr = DO_SYSCALL(mmap, request_mmap_addr, request_mmap_size,
                                PROT_READ | PROT_WRITE | PROT_EXEC, MAP_FIXED | MAP_SHARED,
                                g_isgx_device, 0);
-    if (IS_PTR_ERR(addr) && PTR_TO_ERR(addr) == -EACCES) {
-        /* OOT DCAP driver (e.g. v1.33.2 found on MS Azure VMs with Ubuntu 18.04) requires
-         * different mmap flags */
-        /* TODO: remove this fallback after we drop Ubuntu 18.04 */
-        addr = DO_SYSCALL(mmap, request_mmap_addr, request_mmap_size,
-                          PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    }
-
     if (IS_PTR_ERR(addr)) {
         int ret = PTR_TO_ERR(addr);
         if (ret == -EPERM) {
             log_error("Permission denied on mapping enclave. "
-                      "You may need to set sysctl vm.mmap_min_addr to zero");
+                      "You may need to set sysctl vm.mmap_min_addr to zero.");
         }
 
         log_error("Allocation of EPC memory failed: %s", unix_strerror(ret));
@@ -218,13 +210,14 @@ int create_enclave(sgx_arch_secs_t* secs, sgx_arch_token_t* token) {
     int ret = DO_SYSCALL(ioctl, g_isgx_device, SGX_IOC_ENCLAVE_CREATE, &param);
 
     if (ret < 0) {
-        log_error("Enclave creation IOCTL failed: %s", unix_strerror(ret));
+        if (ret == -EIO) {
+            log_error("Enclave creation IOCTL failed with %s. Probably your manifest requires "
+                      "CPU features (e.g. `sgx.require_avx512`) that are not available on this "
+                      "platform.", unix_strerror(ret));
+        } else {
+            log_error("Enclave creation IOCTL failed: %s", unix_strerror(ret));
+        }
         return ret;
-    }
-
-    if (ret) {
-        log_error("Enclave creation IOCTL failed: %s", unix_strerror(ret));
-        return -EPERM;
     }
 
     secs->attributes.flags |= SGX_FLAGS_INITIALIZED;
@@ -536,8 +529,8 @@ int init_enclave(sgx_arch_secs_t* secs, sgx_sigstruct_t* sigstruct, sgx_arch_tok
 #endif
     };
     int ret = DO_SYSCALL(ioctl, g_isgx_device, SGX_IOC_ENCLAVE_INIT, &param);
-
     if (ret < 0) {
+        log_error("Enclave initialization IOCTL failed: %s", unix_strerror(ret));
         return ret;
     }
 
@@ -566,7 +559,7 @@ int init_enclave(sgx_arch_secs_t* secs, sgx_sigstruct_t* sigstruct, sgx_arch_tok
                 error = "Unknown reason";
                 break;
         }
-        log_error("enclave EINIT failed - %s", error);
+        log_error("Enclave initialization IOCTL failed: %s", error);
         return -EPERM;
     }
 

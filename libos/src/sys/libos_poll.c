@@ -15,6 +15,7 @@
 #include "libos_table.h"
 #include "libos_thread.h"
 #include "libos_utils.h"
+#include "linux_abi/errors.h"
 #include "pal.h"
 
 typedef unsigned long __fd_mask;
@@ -81,7 +82,7 @@ static long do_poll(struct pollfd* fds, size_t fds_len, uint64_t* timeout_us) {
     size_t ret_events_count = 0;
     struct libos_handle_map* map = get_cur_thread()->handle_map;
 
-    lock(&map->lock);
+    rwlock_read_lock(&map->lock);
 
     /*
      * After each iteration of this loop either:
@@ -123,7 +124,7 @@ static long do_poll(struct pollfd* fds, size_t fds_len, uint64_t* timeout_us) {
             }
 
             if (ret < 0) {
-                unlock(&map->lock);
+                rwlock_read_unlock(&map->lock);
                 goto out;
             }
 
@@ -165,7 +166,7 @@ static long do_poll(struct pollfd* fds, size_t fds_len, uint64_t* timeout_us) {
         pal_handles[i] = pal_handle;
     }
 
-    unlock(&map->lock);
+    rwlock_read_unlock(&map->lock);
 
     uint64_t tmp_timeout_us = 0;
     if (ret_events_count) {
@@ -191,7 +192,12 @@ static long do_poll(struct pollfd* fds, size_t fds_len, uint64_t* timeout_us) {
 
         fds[i].revents = 0;
         if (ret_events[i] & PAL_WAIT_ERROR)
-            fds[i].revents |= POLLERR | POLLHUP;
+            fds[i].revents |= POLLERR;
+        if (ret_events[i] & PAL_WAIT_HANG_UP) {
+            fds[i].revents |= POLLHUP;
+            /* add RDHUP event only if user requested for it to be reported */
+            fds[i].revents |= fds[i].events & POLLRDHUP;
+        }
         if (ret_events[i] & PAL_WAIT_READ)
             fds[i].revents |= fds[i].events & (POLLIN | POLLRDNORM);
         if (ret_events[i] & PAL_WAIT_WRITE)

@@ -20,10 +20,12 @@ os.environ['GRAMINE_IMPORT_FOR_SPHINX_ANYWAY'] = '1'
 import pathlib
 import subprocess
 
+import recommonmark.parser
+
 # -- Project information -----------------------------------------------------
 
 project = 'Gramine'
-copyright = '2022, Gramine Contributors'
+copyright = '2023, Gramine Contributors'
 author = 'Gramine Contributors'
 
 # The short X.Y version
@@ -42,6 +44,7 @@ release = ''
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    'recommonmark',
     'sphinx.ext.autodoc',
     'sphinx.ext.intersphinx',
     'sphinx.ext.napoleon',
@@ -55,6 +58,8 @@ templates_path = ['_templates']
 # The suffix(es) of source filenames.
 source_suffix = {
     '.rst': 'restructuredtext',
+    '.md': 'markdown',
+    '.markdown': 'markdown',
 }
 
 # The master toctree document.
@@ -189,6 +194,7 @@ man_pages = [
     ('manpages/gramine', 'gramine-sgx', 'Gramine', [author], 1),
     ('manpages/gramine-argv-serializer', 'gramine-argv-serializer', 'Serialize command line arguments', [author], 1),
     ('manpages/gramine-manifest', 'gramine-manifest', 'Gramine manifest preprocessor', [author], 1),
+    ('manpages/gramine-ratls', 'gramine-ratls', 'RA-TLS wrapper', [author], 1),
     ('manpages/gramine-sgx-gen-private-key', 'gramine-sgx-gen-private-key', 'Gramine SGX key generator', [author], 1),
     ('manpages/gramine-sgx-get-token', 'gramine-sgx-get-token', 'Gramine SGX Token generator', [author], 1),
     ('manpages/gramine-sgx-ias-request', 'gramine-sgx-ias-request', 'Submit Intel Attestation Service request', [author], 1),

@@ -10,6 +10,7 @@
 
 #include "avl_tree.h"
 #include "libos_defs.h"
+#include "libos_fs_lock.h"
 #include "libos_handle.h"
 #include "libos_internal.h"
 #include "libos_thread.h"
@@ -32,9 +33,9 @@ enum {
     IPC_MSG_SYNC_CONFIRM_UPGRADE,
     IPC_MSG_SYNC_CONFIRM_DOWNGRADE,
     IPC_MSG_SYNC_CONFIRM_CLOSE,
-    IPC_MSG_POSIX_LOCK_SET,
-    IPC_MSG_POSIX_LOCK_GET,
-    IPC_MSG_POSIX_LOCK_CLEAR_PID,
+    IPC_MSG_FILE_LOCK_SET,
+    IPC_MSG_FILE_LOCK_GET,
+    IPC_MSG_FILE_LOCK_CLEAR_PID,
     IPC_MSG_CODE_BOUND,
 };
 
@@ -271,38 +272,43 @@ int ipc_sync_confirm_downgrade_callback(IDTYPE src, void* data, unsigned long se
 int ipc_sync_confirm_close_callback(IDTYPE src, void* data, unsigned long seq);
 
 /*
- * POSIX_LOCK_SET: `struct libos_ipc_posix_lock` -> `int`
- * POSIX_LOCK_GET: `struct libos_ipc_posix_lock` -> `struct libos_ipc_posix_lock_resp`
- * POSIX_LOCK_CLEAR_PID: `IDTYPE` -> `int`
+ * FILE_LOCK_SET: `struct libos_ipc_file_lock` -> `int`
+ * FILE_LOCK_GET: `struct libos_ipc_file_lock` -> `struct libos_ipc_file_lock_resp`
+ * FILE_LOCK_CLEAR_PID: `IDTYPE` -> `int`
  */
 
-struct libos_ipc_posix_lock {
-    /* see `struct posix_lock` in `libos_fs_lock.h` */
+struct libos_ipc_file_lock {
+    /* see `struct libos_file_lock` in `libos_fs_lock.h` */
+    enum libos_file_lock_family family;
     int type;
     uint64_t start;
     uint64_t end;
     IDTYPE pid;
+    uint64_t handle_id;
 
     bool wait;
     char path[]; /* null-terminated */
 };
 
-struct libos_ipc_posix_lock_resp {
+struct libos_ipc_file_lock_resp {
     int result;
 
-    /* see `struct posix_lock` in `libos_fs_lock.h` */
+    /* see `struct libos_file_lock` in `libos_fs_lock.h` */
+    enum libos_file_lock_family family;
     int type;
     uint64_t start;
     uint64_t end;
     IDTYPE pid;
+    uint64_t handle_id;
 };
 
-struct posix_lock;
+struct libos_file_lock;
 
-int ipc_posix_lock_set(const char* path, struct posix_lock* pl, bool wait);
-int ipc_posix_lock_set_send_response(IDTYPE vmid, unsigned long seq, int result);
-int ipc_posix_lock_get(const char* path, struct posix_lock* pl, struct posix_lock* out_pl);
-int ipc_posix_lock_clear_pid(IDTYPE pid);
-int ipc_posix_lock_set_callback(IDTYPE src, void* data, unsigned long seq);
-int ipc_posix_lock_get_callback(IDTYPE src, void* data, unsigned long seq);
-int ipc_posix_lock_clear_pid_callback(IDTYPE src, void* data, unsigned long seq);
+int ipc_file_lock_set(const char* path, struct libos_file_lock* file_lock, bool wait);
+int ipc_file_lock_set_send_response(IDTYPE vmid, unsigned long seq, int result);
+int ipc_file_lock_get(const char* path, struct libos_file_lock* file_lock,
+                      struct libos_file_lock* out_file_lock);
+int ipc_file_lock_clear_pid(IDTYPE pid);
+int ipc_file_lock_set_callback(IDTYPE src, void* data, unsigned long seq);
+int ipc_file_lock_get_callback(IDTYPE src, void* data, unsigned long seq);
+int ipc_file_lock_clear_pid_callback(IDTYPE src, void* data, unsigned long seq);

@@ -705,20 +705,9 @@ static int parse_loader_config(char* manifest, struct pal_enclave* enclave_info,
     }
 
     if (thread_num_int64 < 0) {
-        /* TODO: sgx.thread_num is deprecated in v1.4, remove in v1.5 */
-        ret = toml_int_in(manifest_root, "sgx.thread_num", /*defaultval=*/-1, &thread_num_int64);
-        if (ret < 0) {
-            log_error("Cannot parse 'sgx.thread_num'");
-            ret = -EINVAL;
-            goto out;
-        }
-        if (thread_num_int64 < 0) {
-            log_error("'sgx.max_threads' not found in the manifest");
-            ret = -EINVAL;
-            goto out;
-        }
-        log_error("Detected deprecated syntax: 'sgx.thread_num'. Consider switching to "
-                  "'sgx.max_threads'.");
+        log_error("'sgx.max_threads' not found in the manifest");
+        ret = -EINVAL;
+        goto out;
     }
 
     if (!thread_num_int64) {
@@ -1209,7 +1198,7 @@ int main(int argc, char* argv[], char* envp[]) {
         return -ENOMEM;
     }
 
-    // Are we the first in this Gramine's namespace?
+    // Are we the first in this Gramine's instance?
     bool first_process = !strcmp(argv[2], "init");
     if (!first_process && strcmp(argv[2], "child")) {
         print_usage_and_exit(argv[0]);

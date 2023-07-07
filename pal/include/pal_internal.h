@@ -28,7 +28,6 @@
  * PAL.
  */
 struct pal_common_state {
-    uint64_t instance_id;
     PAL_HANDLE parent_process;
     const char* raw_manifest_data;
 };
@@ -157,6 +156,7 @@ noreturn void pal_main(uint64_t instance_id, PAL_HANDLE parent_process, PAL_HAND
 /* For initialization */
 
 unsigned long _PalMemoryQuota(void);
+int _PalDeviceIoControl(PAL_HANDLE handle, uint32_t cmd, unsigned long arg, int* out_ret);
 // Returns 0 on success, negative PAL code on failure
 int _PalGetCPUInfo(struct pal_cpu_info* info);
 
@@ -171,7 +171,6 @@ int _PalStreamAttributesQuery(const char* uri, PAL_STREAM_ATTR* attr);
 int _PalStreamAttributesQueryByHandle(PAL_HANDLE hdl, PAL_STREAM_ATTR* attr);
 int _PalStreamMap(PAL_HANDLE handle, void* addr, pal_prot_flags_t prot, uint64_t offset,
                   uint64_t size);
-int _PalStreamUnmap(void* addr, uint64_t size);
 int64_t _PalStreamSetLength(PAL_HANDLE handle, uint64_t length);
 int _PalStreamFlush(PAL_HANDLE handle);
 int _PalSendHandle(PAL_HANDLE target_process, PAL_HANDLE cargo);
@@ -286,15 +285,6 @@ void* malloc(size_t size);
 void* malloc_copy(const void* mem, size_t size);
 void* calloc(size_t num, size_t size);
 void free(void* mem);
-
-#ifdef __GNUC__
-#define __attribute_hidden        __attribute__((visibility("hidden")))
-#define __attribute_always_inline __attribute__((always_inline))
-#define __attribute_unused        __attribute__((unused))
-#define __attribute_noinline      __attribute__((noinline))
-#else
-#error Unsupported compiler
-#endif
 
 int _PalInitDebugStream(const char* path);
 int _PalDebugLog(const void* buf, size_t size);

@@ -9,10 +9,9 @@
  * This file contains the system call table.
  */
 
-#include <asm/unistd.h>
-
 #include "libos_internal.h"
 #include "libos_table.h"
+#include "linux_abi/syscalls_nr_arch.h"
 
 libos_syscall_t libos_syscall_table[LIBOS_SYSCALL_BOUND] = {
     [__NR_read]                    = (libos_syscall_t)libos_syscall_read,
@@ -88,7 +87,7 @@ libos_syscall_t libos_syscall_table[LIBOS_SYSCALL_BOUND] = {
     [__NR_msgrcv]                  = (libos_syscall_t)0, // libos_syscall_msgrcv,
     [__NR_msgctl]                  = (libos_syscall_t)0, // libos_syscall_msgctl,
     [__NR_fcntl]                   = (libos_syscall_t)libos_syscall_fcntl,
-    [__NR_flock]                   = (libos_syscall_t)0, // libos_syscall_flock
+    [__NR_flock]                   = (libos_syscall_t)libos_syscall_flock,
     [__NR_fsync]                   = (libos_syscall_t)libos_syscall_fsync,
     [__NR_fdatasync]               = (libos_syscall_t)libos_syscall_fdatasync,
     [__NR_truncate]                = (libos_syscall_t)libos_syscall_truncate,

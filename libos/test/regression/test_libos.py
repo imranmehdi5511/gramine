@@ -11,8 +11,8 @@ import tomli
 
 from graminelibos.regression import (
     HAS_AVX,
-    HAS_EDMM,
     HAS_SGX,
+    IS_VM,
     ON_X86,
     USES_MUSL,
     RegressionTestCase,
@@ -28,8 +28,18 @@ CPUINFO_TEST_FLAGS = [
 class TC_00_Unittests(RegressionTestCase):
     def test_000_spinlock(self):
         stdout, _ = self.run_binary(['spinlock'], timeout=20)
-
         self.assertIn('Test successful!', stdout)
+
+    def test_001_rwlock(self):
+        # You may need to adjust sgx.max_threads in the manifest when changing these
+        instances = 5
+        iterations = 100
+        readers_num = 10
+        writers_num = 3
+        writers_delay_us = 100
+        stdout, _ = self.run_binary(['rwlock', str(instances), str(iterations), str(readers_num),
+                                     str(writers_num), str(writers_delay_us)], timeout=45)
+        self.assertIn('TEST OK', stdout)
 
     def test_010_gramine_run_test(self):
         stdout, _ = self.run_binary(['run_test', 'pass'])
@@ -278,8 +288,6 @@ class TC_01_Bootstrap(RegressionTestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
-    @unittest.skipUnless(HAS_SGX,
-        'Protected files are only available with SGX')
     def test_221_send_handle_pf(self):
         path = 'tmp/pf/send_handle_test'
         os.makedirs('tmp/pf', exist_ok=True)
@@ -324,7 +332,10 @@ class TC_01_Bootstrap(RegressionTestCase):
         self.assertIn('TEST OK', stdout, 'test failed: {}'.format(cmd))
 
     def test_230_keys(self):
-        stdout, _ = self.run_binary(['keys'])
+        if HAS_SGX:
+            stdout, _ = self.run_binary(['keys', 'sgx'])
+        else:
+            stdout, _ = self.run_binary(['keys'])
         self.assertIn('TEST OK', stdout)
 
     def test_300_shared_object(self):
@@ -562,20 +573,6 @@ class TC_04_Attestation(RegressionTestCase):
         self.assertIn("Test local attestation... SUCCESS", stdout)
         self.assertIn("Test quote interface... SUCCESS", stdout)
 
-    @unittest.skipIf(HAS_EDMM, 'EDMM machines use DCAP attestation')
-    def test_002_attestation_deprecated(self):
-        stdout, _ = self.run_binary(['attestation_deprecated_syntax'], timeout=60)
-        self.assertIn("Test resource leaks in attestation filesystem... SUCCESS", stdout)
-        self.assertIn("Test local attestation... SUCCESS", stdout)
-        self.assertIn("Test quote interface... SUCCESS", stdout)
-
-    @unittest.skipIf(HAS_EDMM, 'EDMM machines use DCAP attestation')
-    def test_003_attestation_deprecated_stdio(self):
-        stdout, _ = self.run_binary(['attestation_deprecated_syntax', 'test_stdio'], timeout=60)
-        self.assertIn("Test resource leaks in attestation filesystem... SUCCESS", stdout)
-        self.assertIn("Test local attestation... SUCCESS", stdout)
-        self.assertIn("Test quote interface... SUCCESS", stdout)
-
 class TC_30_Syscall(RegressionTestCase):
     def test_000_getcwd(self):
         stdout, _ = self.run_binary(['getcwd'])
@@ -702,9 +699,6 @@ class TC_30_Syscall(RegressionTestCase):
                     os.unlink(path)
         self.assertIn('TEST OK', stdout)
 
-    @unittest.skip('Protected files (as implemented in Linux-SGX PAL) do not support renaming yet')
-    @unittest.skipUnless(HAS_SGX,
-        'Protected files are only available with SGX')
     def test_034_rename_unlink_pf(self):
         os.makedirs('tmp/pf', exist_ok=True)
         file1 = 'tmp/pf/file1'
@@ -793,11 +787,10 @@ class TC_30_Syscall(RegressionTestCase):
         self.assertIn('Child process done', stdout)
         self.assertIn('Parent process done', stdout)
 
-    @unittest.skipUnless(HAS_SGX,
-        'Protected files are only available with SGX')
+    @unittest.skipUnless(HAS_SGX, 'Sealed (protected) files are only available with SGX')
     def test_053_mmap_file_backed_protected(self):
         # create the protected file
-        pf_path = 'sealed_file_mrsigner.dat'
+        pf_path = 'encrypted_file_mrsigner.dat'
         if os.path.exists(pf_path):
             os.remove(pf_path)
         stdout, _ = self.run_binary(['sealed_file', pf_path])
@@ -955,6 +948,14 @@ class TC_30_Syscall(RegressionTestCase):
                 os.remove('tmp/lock_file')
         self.assertIn('TEST OK', stdout)
 
+    def test_111_fcntl_lock_child_only(self):
+        try:
+            stdout, _ = self.run_binary(['fcntl_lock_child_only'], timeout=60)
+        finally:
+            if os.path.exists('tmp_enc/lock_file'):
+                os.remove('tmp_enc/lock_file')
+        self.assertIn('TEST OK', stdout)
+
     def test_120_gethostname_default(self):
         # The generic manifest (manifest.template) doesn't use extra runtime conf.
         stdout, _ = self.run_binary(['hostname', 'localhost'])
@@ -963,6 +964,20 @@ class TC_30_Syscall(RegressionTestCase):
     def test_121_gethostname_pass_etc(self):
         stdout, _ = self.run_binary(['hostname_extra_runtime_conf', socket.gethostname()])
         self.assertIn("TEST OK", stdout)
+
+    def test_130_sid(self):
+        stdout, _ = self.run_binary(['sid'])
+        self.assertIn("TEST OK", stdout)
+
+    def test_140_flock_lock(self):
+        try:
+            stdout, _ = self.run_binary(['flock_lock'])
+        finally:
+            if os.path.exists('tmp/flock_file'):
+                os.remove('tmp/flock_file')
+            if os.path.exists('tmp/flock_file2'):
+                os.remove('tmp/flock_file2')
+        self.assertIn('TEST OK', stdout)
 
 class TC_31_Syscall(RegressionTestCase):
     def test_000_syscall_redirect(self):
@@ -1029,10 +1044,39 @@ class TC_40_FileSystem(RegressionTestCase):
         self.assertIn('/dev/stdout', stdout)
         self.assertIn('/dev/stderr', stdout)
         self.assertIn('Four bytes from /dev/urandom', stdout)
+        self.assertIn('Hello World written to stdout!', stdout)
         self.assertIn('TEST OK', stdout)
 
     def test_002_device_passthrough(self):
         stdout, _ = self.run_binary(['device_passthrough'])
+        self.assertIn('TEST OK', stdout)
+
+    @unittest.skipUnless(IS_VM, '/dev/gramine_test_dev is available only on some Jenkins machines')
+    def test_003_device_ioctl(self):
+        stdout, _ = self.run_binary(['device_ioctl'])
+        self.assertIn('TEST OK', stdout)
+
+    @unittest.skipUnless(IS_VM, '/dev/gramine_test_dev is available only on some Jenkins machines')
+    def test_004_device_ioctl_fail(self):
+        try:
+            self.run_binary(['device_ioctl_fail'])
+            self.fail('device_ioctl_fail unexpectedly succeeded')
+        except subprocess.CalledProcessError as e:
+            stdout = e.stdout.decode()
+            self.assertRegex(stdout, r'ioctl\(devfd, GRAMINE_TEST_DEV_IOCTL_REWIND\).*'
+                                     r'Function not implemented')
+
+    @unittest.skipUnless(IS_VM, '/dev/gramine_test_dev is available only on some Jenkins machines')
+    def test_005_device_ioctl_parse_fail(self):
+        stdout, stderr = self.run_binary(['device_ioctl_parse_fail'])
+        self.assertRegex(stderr, r'error: Invalid struct value of allowed IOCTL .* in manifest')
+        self.assertIn('error: IOCTL: each memory sub-region must be a TOML table', stderr)
+        self.assertIn('error: IOCTL: parsing of \'size\' field failed', stderr)
+        self.assertIn('error: IOCTL: cannot find \'buf_size\'', stderr)
+        self.assertIn('error: IOCTL: \'ptr\' cannot specify \'size\'', stderr)
+        self.assertIn('error: IOCTL: \'alignment\' may be specified only at beginning of mem '
+                      'region', stderr)
+        self.assertIn('error: IOCTL: parsing of \'direction\' field failed', stderr)
         self.assertIn('TEST OK', stdout)
 
     def test_010_path(self):
@@ -1060,15 +1104,17 @@ class TC_40_FileSystem(RegressionTestCase):
             cpuinfo['flags'] = ''
 
         stdout, _ = self.run_binary(['proc_cpuinfo', cpuinfo['flags']])
-
-        # proc/cpuinfo Linux-based formatting
-        self.assertIn('cpuinfo test passed', stdout)
+        self.assertIn('TEST OK', stdout)
 
     def test_021_procstat(self):
         stdout, _ = self.run_binary(['proc_stat'])
 
         # proc/stat Linux-based formatting
         self.assertIn('/proc/stat test passed', stdout)
+
+    def test_022_shadow_pseudo_fs(self):
+        stdout, _ = self.run_binary(['shadow_pseudo_fs'])
+        self.assertIn('TEST OK', stdout)
 
     def test_030_fdleak(self):
         # The fd limit is rather arbitrary, but must be in sync with numbers from the test.
@@ -1134,48 +1180,45 @@ class TC_40_FileSystem(RegressionTestCase):
 
     @unittest.skipUnless(HAS_SGX, 'Sealed (protected) files are only available with SGX')
     def test_050_sealed_file_mrenclave(self):
-        # Test both old and new implementation
-        for pf_path in ['sealed_file_mrenclave.dat', 'encrypted_file_mrenclave.dat']:
-            if os.path.exists(pf_path):
-                os.remove(pf_path)
+        pf_path = 'encrypted_file_mrenclave.dat'
+        if os.path.exists(pf_path):
+            os.remove(pf_path)
 
-            stdout, _ = self.run_binary(['sealed_file', pf_path])
-            self.assertIn('CREATION OK', stdout)
-            stdout, _ = self.run_binary(['sealed_file', pf_path])
-            self.assertIn('READING OK', stdout)
+        stdout, _ = self.run_binary(['sealed_file', pf_path])
+        self.assertIn('CREATION OK', stdout)
+        stdout, _ = self.run_binary(['sealed_file', pf_path])
+        self.assertIn('READING OK', stdout)
 
     @unittest.skipUnless(HAS_SGX, 'Sealed (protected) files are only available with SGX')
     def test_051_sealed_file_mrsigner(self):
-        # Test both old and new implementation
-        for pf_path in ['sealed_file_mrsigner.dat', 'encrypted_file_mrsigner.dat']:
-            if os.path.exists(pf_path):
-                os.remove(pf_path)
+        pf_path = 'encrypted_file_mrsigner.dat'
+        if os.path.exists(pf_path):
+            os.remove(pf_path)
 
-            stdout, _ = self.run_binary(['sealed_file', pf_path])
-            self.assertIn('CREATION OK', stdout)
-            stdout, _ = self.run_binary(['sealed_file_mod', pf_path])
-            self.assertIn('READING FROM MODIFIED ENCLAVE OK', stdout)
+        stdout, _ = self.run_binary(['sealed_file', pf_path])
+        self.assertIn('CREATION OK', stdout)
+        stdout, _ = self.run_binary(['sealed_file_mod', pf_path])
+        self.assertIn('READING FROM MODIFIED ENCLAVE OK', stdout)
 
     @unittest.skipUnless(HAS_SGX, 'Sealed (protected) files are only available with SGX')
     def test_052_sealed_file_mrenclave_bad(self):
-        # Test both old and new implementation
-        for pf_path in ['sealed_file_mrenclave.dat', 'encrypted_file_mrenclave.dat']:
-            # Negative test: Seal MRENCLAVE-bound file in one enclave -> opening this file in
-            # another enclave (with different MRENCLAVE) should fail
-            if os.path.exists(pf_path):
-                os.remove(pf_path)
+        pf_path = 'encrypted_file_mrenclave.dat'
+        # Negative test: Seal MRENCLAVE-bound file in one enclave -> opening this file in
+        # another enclave (with different MRENCLAVE) should fail
+        if os.path.exists(pf_path):
+            os.remove(pf_path)
 
-            stdout, _ = self.run_binary(['sealed_file', pf_path])
-            self.assertIn('CREATION OK', stdout)
+        stdout, _ = self.run_binary(['sealed_file', pf_path])
+        self.assertIn('CREATION OK', stdout)
 
-            try:
-                self.run_binary(['sealed_file_mod', pf_path])
-                self.fail('expected to return nonzero')
-            except subprocess.CalledProcessError as e:
-                self.assertEqual(e.returncode, 1)
-                stdout = e.stdout.decode()
-                self.assertNotIn('READING FROM MODIFIED ENCLAVE OK', stdout)
-                self.assertIn('Permission denied', stdout)
+        try:
+            self.run_binary(['sealed_file_mod', pf_path])
+            self.fail('expected to return nonzero')
+        except subprocess.CalledProcessError as e:
+            self.assertEqual(e.returncode, 1)
+            stdout = e.stdout.decode()
+            self.assertNotIn('READING FROM MODIFIED ENCLAVE OK', stdout)
+            self.assertIn('Permission denied', stdout)
 
     def test_060_synthetic(self):
         stdout, _ = self.run_binary(['synthetic'])
@@ -1343,6 +1386,10 @@ class TC_80_Socket(RegressionTestCase):
     def test_310_socket_tcp_ipv6_v6only(self):
         stdout, _ = self.run_binary(['tcp_ipv6_v6only'], timeout=50)
         self.assertIn('test completed successfully', stdout)
+
+    def test_320_socket_ioctl(self):
+        stdout, _ = self.run_binary(['socket_ioctl'])
+        self.assertIn('TEST OK', stdout)
 
 @unittest.skipUnless(HAS_SGX,
     'This test is only meaningful on SGX PAL because only SGX emulates CPUID.')

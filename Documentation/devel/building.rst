@@ -1,5 +1,5 @@
-Building
-========
+Build and install Gramine from source
+=====================================
 
 .. highlight:: sh
 
@@ -10,19 +10,20 @@ Gramine consists of several components:
 - A patched C Library (shared library ``libc.so`` and possibly others).
   Currently there are two options: musl and GNU C Library (glibc).
 
-The build of Gramine implies building at least the first two components. The
+Building Gramine implies building at least the first two components. The
 build of the patched C library is optional but highly recommended for
-performance reasons. Both patched glibc and patched musl are built by default.
+performance reasons. You can choose at most one of the libcs available. By
+default glibc is built.
 
 Gramine currently only works on the x86_64 architecture. Gramine is currently
 tested on Ubuntu 18.04/20.04, along with Linux kernel version 5.x. We recommend
 building and installing Gramine on Ubuntu with Linux kernel version 5.11 or
-higher. If you find problems with Gramine on other Linux distributions, please
-contact us with a |~| detailed `bug report
-<https://github.com/gramineproject/gramine/issues/new>`__.
+higher. If you find problems with Gramine on other Linux distributions, contact
+us with a |~| detailed `bug report
+<https://github.com/gramineproject/gramine/issues/new/choose>`__.
 
-Installing dependencies
------------------------
+Install dependencies
+--------------------
 
 .. _common-dependencies:
 
@@ -71,7 +72,7 @@ Kernel version can be checked using the following command::
 If your current kernel version is lower than 5.11, then you have two options:
 
 - Update the Linux kernel to at least 5.11 in your OS distro. If you use Ubuntu,
-  you can follow e.g. `this tutorial
+  you can follow `this tutorial
   <https://itsfoss.com/upgrade-linux-kernel-ubuntu/>`__.
 
 - Install out-of-tree driver and use our provided patches to the Linux kernel
@@ -116,12 +117,12 @@ If you plan on enabling ``-Ddcap`` option, you need to install
    sudo apt-get update
    sudo apt-get install libsgx-dcap-quote-verify-dev
 
-Building
---------
+Build Gramine
+-------------
 
-In order to build Gramine, you need to first set up the build directory. In the
-root directory of Gramine repo, run the following command (recall that "direct"
-means non-SGX version)::
+To build Gramine, you need to first set up the build directory. In the root
+directory of Gramine repo, run the following command (recall that "direct" means
+non-SGX version)::
 
    meson setup build/ --buildtype=release -Ddirect=enabled -Dsgx=enabled \
        -Dsgx_driver=<driver> -Dsgx_driver_include_path=<path-to-sgx-driver-sources>
@@ -168,16 +169,49 @@ it's usually not needed.
    file <https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/arch/x86/include/uapi/asm/sgx.h?h=v5.11>`__.
    This is because the DCAP and the upstream drivers have compatible APIs.
 
-.. note::
+Set ``-Dlibc`` option to ``musl`` if you wish to build musl instead of glibc
+(which is built by default), or to ``none`` if you do not want to build any
+libc.
 
-   When installing from sources, Gramine executables are placed under
-   ``/usr/local/bin``. Some Linux distributions (notably CentOS) do not search
-   for executables under this path. If your system reports that Gramine
-   programs can not be found, you might need to edit your configuration files so
-   that ``/usr/local/bin`` is in your path (in ``PATH`` environment variable).
+Installation prefix
+^^^^^^^^^^^^^^^^^^^
 
-Set ``-Dglibc=`` or ``-Dmusl=`` options to ``disabled`` if you wish not to build
-the support for any (they are both built by default).
+By default, Meson uses installation prefix :file:`/usr/local`.
+
+- When installing from sources, Gramine executables are placed under
+  :file:`/usr/local/bin`. Some Linux distributions (notably CentOS) do not
+  search for executables under this path. If your system reports that Gramine
+  programs can not be found, you might need to edit your configuration files so
+  that :file:`/usr/local/bin` is in your path (in ``$PATH`` environment
+  variable). Alternatively, you can modify the installation prefix (e.g. to
+  :file:`/usr`) or the executable directory (e.g. :command:`meson
+  --bindir=/usr/bin`).
+
+- When installing from sources, Gramine Python modules are placed under
+  :file:`/usr/local/lib/python3.xyz/site-packages` (or under
+  :file:`/usr/local/lib/python3.xyz/dist-packages` on Debian-like distros). Some
+  Linux distributions (notably Alpine) do not search for Python modules under
+  this path. If your system fails to find Gramine Python modules, you might need
+  to adjust ``PYTHONPATH`` environment variable. Alternatively, you can modify
+  the installation prefix, e.g. to :file:`/usr`.
+
+To install into some other place than :file:`/usr/local`, use :command:`meson
+--prefix=<prefix>`. Note that if you chose something else than :file:`/usr`
+then for things to work, you probably need to adjust several environment
+variables:
+
+=========================== ================================================== ========================
+Variable                    What to add                                        Read more
+=========================== ================================================== ========================
+``$PATH``                   :file:`<prefix>/bin`                               `POSIX.1-2018 8.3`_
+``$PYTHONPATH``             :file:`<prefix>/lib/python<version>/site-packages` :manpage:`python3(1)`
+``$PKG_CONFIG_PATH``        :file:`<prefix>/<libdir>/pkgconfig`                :manpage:`pkg-config(1)`
+=========================== ================================================== ========================
+
+.. _POSIX.1-2018 8.3: https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap08.html#tag_08_03
+
+This very much depends on a particular distribution, so please consult
+relevant documentation provided by your distro.
 
 Additional build options
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -235,24 +269,6 @@ Additional build options
 
 - To build with ``-Werror``, run :command:`meson --werror`.
 
-- To install into some other place than :file:`/usr/local`, use
-  :command:`meson --prefix=<prefix>`. Note that if you chose something else than
-  :file:`/usr` then for things to work, you probably need to adjust several
-  environment variables:
-
-  =========================== ================================================== ========================
-  Variable                    What to add                                        Read more
-  =========================== ================================================== ========================
-  ``$PATH``                   :file:`<prefix>/bin`                               `POSIX.1-2018 8.3`_
-  ``$PYTHONPATH``             :file:`<prefix>/lib/python<version>/site-packages` :manpage:`python3(1)`
-  ``$PKG_CONFIG_PATH``        :file:`<prefix>/<libdir>/pkgconfig`                :manpage:`pkg-config(1)`
-  =========================== ================================================== ========================
-
-  .. _POSIX.1-2018 8.3: https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap08.html#tag_08_03
-
-  This very much depends on particular distribution, so please consult relevant
-  documentation provided by your distro.
-
 - To compile a patched version of GCC's OpenMP library (``libgomp``), install
   GCC's build prerequisites (see :ref:`common-dependencies`), and use
   :command:`meson -Dlibgomp=enabled`.
@@ -268,14 +284,14 @@ Additional build options
 Prepare a signing key
 ---------------------
 
-Only for SGX enclave development, and if you haven't already, run the following
-command::
+These instructions are only required for systems using Intel SGX that have not
+already created a signing key.
+
+The following command generates an |~| RSA 3072 key suitable for signing SGX
+enclaves and stores it in :file:`{HOME}/.config/gramine/enclave-key.pem`.
+Protect this key and do not disclose it to anyone::
 
    gramine-sgx-gen-private-key
-
-This command generates an |~| RSA 3072 key suitable for signing SGX enclaves and
-stores it in :file:`{HOME}/.config/gramine/enclave-key.pem`. This key needs to
-be protected and should not be disclosed to anyone.
 
 After signing the application's manifest, users may ship the application and
 Gramine binaries, along with an SGX-specific manifest (``.manifest.sgx``
@@ -302,16 +318,16 @@ also git submodules. For this you need to create a |~| dummy builddir using
 
     meson setup build-dist/ \
         -Ddirect=disabled -Dsgx=disabled -Dskeleton=enabled \
-        -Dglibc=enabled -Dmusl=enabled -Dlibgomp-enabled
+        -Dlibc=glibc -Dlibgomp-enabled
     meson dist -C build-dist/ --no-tests --include-subprojects --formats=gztar
 
-The options specified with ``-D`` (especially ``-Dglibc``, ``-Dmusl`` and
-``-Dlibgomp``) are important, because without them some subprojects will not be
-included in the tarball (if in doubt, you can consult
-:file:`scripts/makedist.sh` script). The command :command:`meson dist` still
-needs network access, because it downloads subprojects and checks out git
-submodules. The tarballs are located in :file:`build-dist/meson-dist`. You can
-adjust ``--formats`` option to your needs.
+The options specified with ``-D`` (especially ``-Dlibc`` and ``-Dlibgomp``) are
+important, because they determine which subprojects will be included in the
+tarball. They need to match what you intend to build. The command
+:command:`meson dist` still needs network access, because it downloads
+subprojects and checks out git submodules. The tarballs are located in
+:file:`build-dist/meson-dist`. You can adjust ``--formats`` option to your
+needs.
 
 You can now sever your network connection::
 

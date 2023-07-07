@@ -1,3 +1,5 @@
+fs = import('fs')
+
 tests = {
     'abort': {},
     'abort_multithread': {},
@@ -27,9 +29,11 @@ tests = {
     'exit': {},
     'exit_group': {},
     'fcntl_lock': {},
+    'fcntl_lock_child_only': {},
     'fdleak': {},
     'file_check_policy': {},
     'file_size': {},
+    'flock_lock': {},
     'fopen_cornercases': {},
     'fork_and_exec': {},
     'fp_multithread': {
@@ -66,6 +70,7 @@ tests = {
     'mprotect_prot_growsdown': {},
     'multi_pthread': {},
     'munmap': {},
+    'open_file': {},
     'open_opath': {},
     'openmp': {
         # NOTE: This will use `libgomp` in GCC and `libomp` in Clang.
@@ -89,8 +94,13 @@ tests = {
     'rename_unlink': {},
     'run_test': {
         'include_directories': include_directories(
-            # for `libos_entry_api.h`
-            '../../include',
+            # for `gramine_entry_api.h`
+            '../../include/arch' / host_machine.cpu_family(),
+        ),
+    },
+    'rwlock': {
+        'include_directories': include_directories(
+            # for `gramine_entry_api.h`
             '../../include/arch' / host_machine.cpu_family(),
         ),
     },
@@ -106,12 +116,14 @@ tests = {
     'shared_object': {
         'pie': true,
     },
+    'sid': {},
     'sigaction_per_process': {},
     'sigaltstack': {},
     'sighandler_reset': {},
     'sighandler_sigpipe': {},
     'signal_multithread': {},
     'sigprocmask_pending': {},
+    'socket_ioctl': {},
     'spinlock': {
         'include_directories': include_directories(
             # for `spinlock.h`
@@ -147,6 +159,14 @@ if host_machine.cpu_family() == 'x86_64'
     }
 endif
 
+# device_ioctl test may only be executed in a VM environment that prepares the below header file
+if fs.exists('gramine_test_dev_ioctl.h')
+    tests += {
+      'device_ioctl': {},
+      'device_ioctl_parse_fail': {},
+    }
+endif
+
 tests_musl = tests
 
 if host_machine.cpu_family() == 'x86_64'
@@ -177,7 +197,7 @@ endif
 install_dir = pkglibdir / 'tests' / 'libos' / 'regression'
 
 configurations = []
-if enable_glibc
+if get_option('libc') == 'glibc'
     common_lib = static_library('test_libos',
         'dump.c',
         'rw_file.c',
@@ -188,10 +208,10 @@ if enable_glibc
         'tests': tests,
     }
 endif
-if enable_musl
+if get_option('libc') == 'musl'
     if meson.get_compiler('c').get_id() != 'gcc'
-        error('Compiling tests is currently unsupported with Musl and compilers other than GCC. ' +
-              'You need to either disable Musl (-Dmusl=disabled) or use GCC (CC=gcc).')
+        error('Compiling tests is currently unsupported with musl and compilers other than GCC. ' +
+              'You need to either disable musl (i.e. -Dlibc=glibc) or use GCC (CC=gcc).')
     endif
 
     musl_specs_path_cmd = run_command('sh', '-c',
@@ -287,10 +307,12 @@ foreach conf: configurations
     endforeach
 endforeach
 
-if enable_musl
+if get_option('libc') == 'musl'
     meson.add_install_script(
         find_program('install_musl_tests.sh'),
         prefix / install_dir / 'musl',
         musl_execs,
     )
 endif
+
+subdir('asm')

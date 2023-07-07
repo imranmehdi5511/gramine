@@ -249,16 +249,11 @@ static int mount_one_nonroot(toml_table_t* mount, const char* prefix) {
     }
 
     if (mount_path[0] != '/') {
-        /* FIXME: Relative paths are deprecated starting from Gramine v1.2, we can disallow them
-         * completely two versions after it. */
-        if (is_dot_or_dotdot(mount_path)) {
-            log_error("Mount points '.' and '..' are not allowed, use absolute paths instead.");
-            ret = -EINVAL;
-            goto out;
-        }
-        log_error("Detected deprecated syntax: '%s.path' (\"%s\") is not absolute. "
+        log_error("Relative mount path: '%s.path' (\"%s\") is disallowed! "
                   "Consider converting it to absolute by adding \"/\" at the beginning.",
                   prefix, mount_path);
+        ret = -EINVAL;
+        goto out;
     }
 
     if (!mount_type || !strcmp(mount_type, "chroot")) {
@@ -296,105 +291,6 @@ out:
     return ret;
 }
 
-/*
- * Mount filesystems using the deprecated TOML-table syntax.
- *
- * FIXME: This is deprecated starting from Gramine v1.2 and can be removed two versions after it.
- */
-static int mount_nonroot_from_toml_table(void) {
-    int ret = 0;
-
-    assert(g_manifest_root);
-    toml_table_t* manifest_fs = toml_table_in(g_manifest_root, "fs");
-    if (!manifest_fs)
-        return 0;
-
-    toml_table_t* manifest_fs_mounts = toml_table_in(manifest_fs, "mount");
-    if (!manifest_fs_mounts)
-        return 0;
-
-    ssize_t mounts_cnt = toml_table_ntab(manifest_fs_mounts);
-    if (mounts_cnt < 0)
-        return -EINVAL;
-    if (mounts_cnt == 0)
-        return 0;
-
-    log_error("Detected deprecated syntax: 'fs.mount'. Consider converting to the new array "
-              "syntax: 'fs.mounts = [{ type = \"chroot\", uri = \"...\", path = \"...\" }]'.");
-
-    /*
-     * *** Warning: A _very_ ugly hack below ***
-     *
-     * In the TOML-table syntax, the entries are not ordered, but Gramine actually relies on the
-     * specific mounting order (e.g. you can't mount /lib/asdf first and then /lib, but the other
-     * way around works). The problem is, that TOML structure is just a dictionary, so the order of
-     * keys is not preserved.
-     *
-     * To fix the issue, we use an ugly heuristic - we apply mounts sorted by the path length, which
-     * in most cases should result in a proper mount order.
-     *
-     * We do this in O(n^2) because we don't have a sort function, but that shouldn't be an issue -
-     * usually there are around 5 mountpoints with ~30 chars in paths, so it should still be quite
-     * fast.
-     *
-     * Fortunately, the table syntax is deprecated, so we'll be able to remove this code in a future
-     * Gramine release.
-     *
-     * Corresponding issue: https://github.com/gramineproject/gramine/issues/23.
-     */
-    const char** keys = malloc(mounts_cnt * sizeof(*keys));
-    if (!keys)
-        return -ENOMEM;
-
-    size_t* lengths = malloc(mounts_cnt * sizeof(*lengths));
-    if (!lengths) {
-        ret = -ENOMEM;
-        goto out;
-    }
-
-    size_t longest = 0;
-    for (ssize_t i = 0; i < mounts_cnt; i++) {
-        keys[i] = toml_key_in(manifest_fs_mounts, i);
-        assert(keys[i]);
-
-        toml_table_t* mount = toml_table_in(manifest_fs_mounts, keys[i]);
-        assert(mount);
-        char* mount_path;
-        ret = toml_string_in(mount, "path", &mount_path);
-        if (ret < 0 || !mount_path) {
-            if (!ret)
-                ret = -ENOENT;
-            goto out;
-        }
-        lengths[i] = strlen(mount_path);
-        longest = MAX(longest, lengths[i]);
-        free(mount_path);
-    }
-
-    for (size_t i = 0; i <= longest; i++) {
-        for (ssize_t j = 0; j < mounts_cnt; j++) {
-            if (lengths[j] != i)
-                continue;
-            toml_table_t* mount = toml_table_in(manifest_fs_mounts, keys[j]);
-            assert(mount);
-
-            char* prefix = alloc_concat("fs.mount.", -1, keys[j], -1);
-            if (!prefix) {
-                ret = -ENOMEM;
-                goto out;
-            }
-            ret = mount_one_nonroot(mount, prefix);
-            free(prefix);
-            if (ret < 0)
-                goto out;
-        }
-    }
-out:
-    free(keys);
-    free(lengths);
-    return ret;
-}
-
 static int mount_nonroot_from_toml_array(void) {
     int ret;
 
@@ -426,143 +322,6 @@ static int mount_nonroot_from_toml_array(void) {
             return ret;
     }
     return 0;
-}
-
-/*
- * Find where a file with given URI was supposed to be mounted. For instance, if the URI is
- * `file:a/b/c/d`, and there is a mount `{ uri = "file:a/b", path = "/x/y" }`, then this function
- * will set `*out_file_path` to `/x/y/c/d`. Only "chroot" mounts are considered.
- *
- * The caller is supposed to free `*out_file_path`.
- *
- * This function is used for interpreting legacy `sgx.protected_files` syntax as mounts.
- */
-static int find_host_file_mount_path(const char* uri, char** out_file_path) {
-    if (!strstartswith(uri, URI_PREFIX_FILE)) {
-        log_error("'%s' is invalid file URI", uri);
-        return -EINVAL;
-    }
-
-    size_t uri_len = strlen(uri);
-
-    bool found = false;
-    char* file_path = NULL;
-
-    /* Traverse the mount list in reverse: we want to find the latest mount that applies. */
-    struct libos_mount* mount;
-    lock(&g_mount_list_lock);
-    LISTP_FOR_EACH_ENTRY_REVERSE(mount, &g_mount_list, list) {
-        if (strcmp(mount->fs->name, "chroot") != 0 || !strstartswith(mount->uri, URI_PREFIX_FILE))
-            continue;
-
-        const char* mount_uri = mount->uri;
-        size_t mount_uri_len = strlen(mount_uri);
-
-        /* Check if `mount_uri` is equal to `uri`, or is an ancestor of `uri` */
-        if (mount_uri_len <= uri_len && !memcmp(mount_uri, uri, mount_uri_len) &&
-                (!uri[mount_uri_len] || uri[mount_uri_len] == '/')) {
-            /* `rest` is either empty, or begins with '/' */
-            const char* rest = uri + mount_uri_len;
-            found = true;
-            file_path = alloc_concat(mount->path, -1, rest, -1);
-            break;
-        }
-
-        /* Special case: this is the mount of the current directory, and `uri` is not absolute */
-        if (!strcmp(mount_uri, "file:.") && uri[static_strlen(URI_PREFIX_FILE)] != '/') {
-            found = true;
-            file_path = strdup(uri + static_strlen(URI_PREFIX_FILE));
-            break;
-        }
-    }
-    unlock(&g_mount_list_lock);
-
-    if (!found)
-        return -ENOENT;
-
-    if (!file_path)
-        return -ENOMEM;
-
-    *out_file_path = file_path;
-    return 0;
-}
-
-/*
- * Parse an array of SGX protected files (`sgx.{array_name}`) and interpret every entry as a `type =
- * "encrypted"` mount.
- *
- * NOTE: This covers only the simplest cases. It will not work correctly if a given file was mounted
- * multiple times, or mounted under a path shadowed by another mount.
- */
-static int mount_protected_files(const char* array_name, const char* key_name) {
-    assert(g_manifest_root);
-    toml_table_t* manifest_sgx = toml_table_in(g_manifest_root, "sgx");
-    if (!manifest_sgx)
-        return 0;
-
-    toml_array_t* manifest_sgx_protected_files = toml_array_in(manifest_sgx, array_name);
-    if (!manifest_sgx_protected_files)
-        return 0;
-
-    ssize_t protected_files_cnt = toml_array_nelem(manifest_sgx_protected_files);
-    if (protected_files_cnt < 0)
-        return -EINVAL;
-
-    if (protected_files_cnt == 0)
-        return 0;
-
-    log_error("Detected deprecated syntax: 'sgx.%s'. Consider converting it to a list "
-              "of mounts with 'type = \"encrypted\"' and 'key_name = \"%s\"'.",
-              array_name, key_name);
-
-    int ret;
-    char* uri = NULL;
-    char* mount_path = NULL;
-    for (ssize_t i = 0; i < protected_files_cnt; i++) {
-        toml_raw_t uri_raw = toml_raw_at(manifest_sgx_protected_files, i);
-        if (!uri_raw) {
-            log_error("Cannot parse 'sgx.%s[%zd]'", array_name, i);
-            ret = -EINVAL;
-            goto out;
-        }
-
-        ret = toml_rtos(uri_raw, &uri);
-        if (ret < 0) {
-            log_error("Cannot parse 'sgx.%s[%zd]' (not a string)", array_name, i);
-            ret = -EINVAL;
-            goto out;
-        }
-
-        ret = find_host_file_mount_path(uri, &mount_path);
-        if (ret < 0) {
-            log_error("Cannot determine mount path for encrypted file '%s'. "
-                      "Consider converting 'sgx.%s' to a list of mounts, as mentioned above.",
-                      uri, array_name);
-            goto out;
-        }
-
-        struct libos_mount_params params = {
-            .type = "encrypted",
-            .path = mount_path,
-            .uri = uri,
-            .key_name = key_name,
-        };
-        ret = mount_fs(&params);
-        if (ret < 0) {
-            ret = -EINVAL;
-            goto out;
-        }
-
-        free(uri);
-        uri = NULL;
-        free(mount_path);
-        mount_path = NULL;
-    }
-    ret = 0;
-out:
-    free(uri);
-    free(mount_path);
-    return ret;
 }
 
 int init_mount_root(void) {
@@ -603,30 +362,9 @@ int init_mount(void) {
 
     int ret;
 
-    ret = mount_nonroot_from_toml_table();
-    if (ret < 0)
-        return ret;
-
     ret = mount_nonroot_from_toml_array();
     if (ret < 0)
         return ret;
-
-    /*
-     * If we're under SGX PAL, handle old protected files syntax.
-     *
-     * TODO: this is deprecated in v1.2, remove two versions later.
-     */
-    if (!strcmp(g_pal_public_state->host_type, "Linux-SGX")) {
-        ret = mount_protected_files("protected_files", "default");
-        if (ret < 0)
-            return ret;
-        ret = mount_protected_files("protected_mrenclave_files", "_sgx_mrenclave");
-        if (ret < 0)
-            return ret;
-        ret = mount_protected_files("protected_mrsigner_files", "_sgx_mrsigner");
-        if (ret < 0)
-            return ret;
-    }
 
     assert(g_manifest_root);
 
